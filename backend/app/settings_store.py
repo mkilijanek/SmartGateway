@@ -23,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
     "compress_mode": "off",          # off | shadow | on  (global default; per-model override possible)
     "compress_config": {},           # overrides of ContentRouterConfig (partial dict)
     "context_insights_enabled": True,
+    "ip_rpm": None,                  # requests/minute per client IP on the public gateway URLs; None = SG_IP_RPM (default 0 = off), 0 = off
     "log_retention_days": 0,         # 0 = keep forever
     "compression_retention_days": 0,
     "stress_retention_days": 0,

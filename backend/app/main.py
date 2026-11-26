@@ -18,7 +18,7 @@ from sqlmodel import select
 
 from pydantic import BaseModel
 
-from . import audit, config, crypto, proxy, retention
+from . import audit, config, crypto, proxy, retention, settings_store
 from .bodylimit import BodyLimit
 from .api import compression as compression_api, mcp_endpoints as mcp_endpoints_api, mcp_gateways as mcp_gateways_api, content_filters as content_filters_api, endpoints, gateways, insights as insights_api, maintenance as maintenance_api, settings as settings_api, stats, stress as stress_api, unified as unified_api
 from .db import engine, init_db, session
@@ -151,6 +151,15 @@ MAX_TRACKED_IPS = 5000
 IP_RPM = int(os.environ.get("SG_IP_RPM", "0") or 0)   # optional per-client-IP limit (requests/minute) on the public gateway URLs; 0 = off
 
 
+def ip_rpm() -> int:
+    """The per-IP limit in force: the value saved in Settings, else SG_IP_RPM. 0 = off."""
+    try:
+        v = settings_store.get_cached().get("ip_rpm")
+    except Exception:  # noqa: BLE001 - a settings problem must not take the gateway down
+        v = None
+    return IP_RPM if v is None else int(v)
+
+
 def _ip_limited(ip: str) -> bool:
     """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits.
     Only accepted requests are remembered, so a deque never holds more than IP_RPM entries and the table is capped at MAX_TRACKED_IPS addresses."""
@@ -165,7 +174,7 @@ def _ip_limited(ip: str) -> bool:
         w = _ip_hits[ip] = deque()
     while w and now - w[0] >= 60:
         w.popleft()
-    if len(w) >= IP_RPM:
+    if len(w) >= ip_rpm():
         return True
     w.append(now)
     return False
@@ -217,7 +226,7 @@ CORS_ORIGINS = [o.strip() for o in os.environ.get("SG_CORS_ORIGINS", "").split("
 async def guard(request: Request, call_next):
     p = request.url.path
     is_gateway = p.startswith(("/gw/", "/v1/", "/unified/", "/mcp/"))
-    if is_gateway and IP_RPM and request.method != "OPTIONS" and _ip_limited(request.client.host if request.client else "?"):
+    if is_gateway and ip_rpm() and request.method != "OPTIONS" and _ip_limited(request.client.host if request.client else "?"):
         return JSONResponse({"error": {"message": "Too many requests from this address", "type": "rate_limit_exceeded", "code": 429}}, status_code=429, headers={"Retry-After": "30"})
     # CORS for the OpenAI-compatible surface only
     cors = {}
