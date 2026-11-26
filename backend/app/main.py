@@ -6,6 +6,7 @@ import logging
 import os
 import secrets
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -97,20 +98,29 @@ def request_authed(headers, cookies) -> bool:
     return False
 
 
-_ip_hits: dict[str, list] = {}
+_ip_hits: dict[str, deque] = {}
+MAX_TRACKED_IPS = 5000
 IP_RPM = int(os.environ.get("SG_IP_RPM", "0") or 0)   # optional per-client-IP limit (requests/minute) on the public gateway URLs; 0 = off
 
 
 def _ip_limited(ip: str) -> bool:
-    """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits."""
+    """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits.
+    Only accepted requests are remembered, so a deque never holds more than IP_RPM entries and the table is capped at MAX_TRACKED_IPS addresses."""
     now = time.time()
-    if len(_ip_hits) > 5000:
-        for k in [k for k, v in _ip_hits.items() if not v or now - v[-1] > 60]:
-            _ip_hits.pop(k, None)
-    w = [t for t in _ip_hits.get(ip, []) if now - t < 60]
+    w = _ip_hits.get(ip)
+    if w is None:
+        if len(_ip_hits) >= MAX_TRACKED_IPS:
+            for k in [k for k, v in _ip_hits.items() if not v or now - v[-1] >= 60]:   # forget idle addresses first ...
+                _ip_hits.pop(k, None)
+            while len(_ip_hits) >= MAX_TRACKED_IPS:                                    # ... then the oldest ones, so the cap is hard
+                _ip_hits.pop(next(iter(_ip_hits)))
+        w = _ip_hits[ip] = deque()
+    while w and now - w[0] >= 60:
+        w.popleft()
+    if len(w) >= IP_RPM:
+        return True
     w.append(now)
-    _ip_hits[ip] = w
-    return len(w) > IP_RPM
+    return False
 
 
 def _locked(ip: str) -> bool:
