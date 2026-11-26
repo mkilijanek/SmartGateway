@@ -304,3 +304,10 @@ class McpCallLog(SQLModel, table=True):
     ok: bool = True
     total_ms: int = 0
     error: Optional[str] = None
+
+
+class AdminSession(SQLModel, table=True):
+    """A signed-in admin browser session. The cookie is only honoured while its row exists, so logout and password change can end it."""
+    sid: str = Field(primary_key=True)
+    exp: float = Field(index=True)
+    created_at: float = Field(default_factory=time.time)

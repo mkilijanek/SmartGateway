@@ -10,6 +10,7 @@ from sqlmodel import select
 from .. import config
 from ..db import session
 from ..models import McpEndpoint, McpGatewayMember, McpItem
+from .. import crypto
 from .client import McpError, McpSession
 
 status: dict[int, str] = {}                      # endpoint_id -> online | offline | unknown
@@ -26,8 +27,17 @@ def headers_of(ep: McpEndpoint) -> dict:
         return {}
 
 
+class _UnreadableHeaders(McpSession):
+    """Stands in for an endpoint whose stored headers cannot be decrypted: every call fails instead of going out without its credentials."""
+
+    async def ensure(self):
+        raise McpError("The stored headers of this MCP endpoint cannot be decrypted (secret.key / SG_SECRET_KEY changed?). Enter them again.")
+
+
 def session_for(ep: McpEndpoint) -> McpSession:
     """One cached session per endpoint; rebuilt when the endpoint is edited."""
+    if crypto.is_unreadable(ep.headers_enc):
+        return _UnreadableHeaders(ep.url, {}, ep.transport)
     sig = (ep.url, ep.headers_enc, ep.transport)
     cur = _sessions.get(ep.id)
     if cur and cur[0] == sig:

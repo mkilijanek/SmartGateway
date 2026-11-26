@@ -49,6 +49,21 @@ def decrypt(value: str) -> str:
         raise ValueError("Cannot decrypt stored secret: wrong SG_SECRET_KEY / secret.key")
 
 
+class SecretUnreadable(ValueError):
+    """A stored secret exists but cannot be decrypted; it must never be treated as "no secret"."""
+
+
+class UnreadableSecret(str):
+    """Placeholder for a stored secret that cannot be decrypted. Truthy on purpose: code that tests `if api_key:` must not take it for "no key"."""
+
+
+UNREADABLE = UnreadableSecret("<unreadable>")
+
+
+def is_unreadable(value) -> bool:
+    return isinstance(value, UnreadableSecret)
+
+
 class EncryptedString(TypeDecorator):
     impl = Text
     cache_ok = True
@@ -64,9 +79,10 @@ class EncryptedString(TypeDecorator):
         try:
             return decrypt(value)
         except ValueError:
-            # DB restored without its secret.key: don't take the whole app down; the key must be re-entered
-            log.warning("Stored upstream API key cannot be decrypted (secret.key / SG_SECRET_KEY changed?) - treating it as unset")
-            return None
+            # DB restored without its secret.key: don't take the whole app down. The value is marked unreadable (not None), so the
+            # endpoint is taken out of rotation instead of being called without its credentials; the key must be re-entered.
+            log.warning("Stored secret cannot be decrypted (secret.key / SG_SECRET_KEY changed?) - marked unreadable, re-enter it")
+            return UNREADABLE
 
 
 def encrypt_existing(engine) -> int:

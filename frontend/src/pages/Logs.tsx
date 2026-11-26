@@ -37,7 +37,7 @@ export default function Logs() {
   const epName = (id: number) => eps.find((e) => e.id === id)?.name || "—";
   const gwName = (id: number) => gws.find((g) => g.id === id)?.name || id;
   const tabs = <Tabs items={[["requests", "Requests"], ["audit", "Audit log"]]} value={tab} onChange={setTab} />;
-  const exportQs = `${gid ? `&gateway_id=${gid}` : ""}${errs ? "&only_errors=true" : ""}`;
+  const exportQs = new URLSearchParams({ ...(gid ? { gateway_id: gid } : {}), ...(errs ? { only_errors: "true" } : {}) }).toString().replace(/^(?=.)/, "&");   // encoded, so a value can never alter the URL
   if (tab === "audit") return <div className="fadein"><PageHeader title="Audit log" sub="Changes made through the admin interface." />{tabs}<AuditLog /></div>;
   return (
     <div className="fadein">
