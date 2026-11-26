@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import select
 
 from .db import session
+from .runtime_ctx import verbose
 from .models import CouncilRun, Endpoint, Gateway, GatewayModel, Member, Model, RequestLog
 
 MAX_DEPTH = 3
@@ -425,7 +426,8 @@ def details(cfg: dict, st: dict, chair: dict, run_id: Optional[int]) -> dict:
 
 # ---------------------------------------------------------------- entry point
 def _err(status: int, message: str, code: str, extra: Optional[dict] = None):
-    return JSONResponse({"error": {"message": message, "type": code, **({"details": extra} if extra else {})}}, status_code=status)
+    """`extra` carries upstream error text, so it is only included for the signed-in admin (or SG_VERBOSE_ERRORS), like on the plain gateway."""
+    return JSONResponse({"error": {"message": message, "type": code, **({"details": extra} if extra and verbose.get() else {})}}, status_code=status)
 
 
 def _chunk(rid: str, model: str, delta: dict, finish=None, **extra) -> str:
@@ -446,7 +448,7 @@ async def run(gw: Gateway, gm, key, route: str, body: dict, headers_in, token):
     try:
         cfg = normalize(cfg)
     except ValueError as e:
-        return _err(500, f"Council is misconfigured: {e}", "council_misconfigured")
+        return _err(500, f"Council is misconfigured: {e}" if verbose.get() else "This council gateway is misconfigured.", "council_misconfigured")
 
     t0 = time.time()
     messages = list(body.get("messages") or [])

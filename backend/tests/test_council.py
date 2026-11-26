@@ -336,3 +336,16 @@ def test_model_roles_are_validated(client, fake, team):
     assert mk(chairman={"model_id": 99999999}).status_code == 400
     r = mk(chairman={"model_id": raw_model("off", enabled=False)})
     assert r.status_code == 400 and "disabled" in r.json()["detail"]
+
+
+def test_failure_details_only_for_the_admin_route(client, fake, team):
+    """Upstream error text per councillor is shown on the admin route (verbose) but never on the public gateway URL."""
+    gw = make_council(client, team)
+    fake.fail = {"up-a", "up-b"}
+    body = {"model": "senate", "messages": [{"role": "user", "content": "q"}]}
+    admin = client.post(f"/api/admin-gw/{gw['slug']}/v1/chat/completions", json=body)
+    public = client.post(f"/gw/{gw['slug']}/v1/chat/completions", json=body)
+    assert admin.status_code == public.status_code == 502
+    assert len(admin.json()["error"]["details"]["errors"]) == 2
+    assert "details" not in public.json()["error"] and "boom" not in public.text and "HTTP 500" not in public.text
+    client.delete(f"/api/gateways/{gw['id']}")
