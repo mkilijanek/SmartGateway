@@ -5,6 +5,7 @@ owning endpoint and logs each call (never its arguments or result)."""
 import asyncio
 import json
 import os
+import re
 import time
 from collections import defaultdict, deque
 from typing import Optional
@@ -87,6 +88,17 @@ def _text_result(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
+_SECRET = re.compile(r"(?i)(bearer\s+[\w.~+/=-]+|(?:api[-_ ]?key|token|secret|password|authorization)\s*[=:]\s*(?:(?:bearer|basic)\s+)?\S+|sk-[\w-]{8,})")
+
+
+def public_error(err: McpError) -> tuple[int, str]:
+    """What a gateway client may learn about an upstream failure: no response bodies, no hosts, no `data`; details stay in the call log."""
+    if isinstance(err.data, dict) and "status" in err.data:
+        st = err.data["status"]
+        return -32000, "The upstream MCP server could not be reached" if not st else f"The upstream MCP server answered HTTP {st}"
+    return err.code, _SECRET.sub("[redacted]", err.message)[:200]
+
+
 async def _forward(gw, key, method: str, name: str, ep_entry: dict, fn):
     """Run one upstream call with timing + logging. Returns (result, error_message)."""
     t0 = time.time()
@@ -151,9 +163,10 @@ async def handle(gw: McpGateway, key, msg: dict) -> Optional[dict]:
             return _rpc_err(id_, -32602, f"Unknown tool: {name}")
         res, err = await _forward(gw, key, method, name, entry, lambda s: s.call_tool(entry["upstream"], params.get("arguments")))
         if err is not None:
+            code, msg = public_error(err)
             if isinstance(err.data, dict) and "status" in err.data:    # the server could not be reached / answered with an HTTP error
-                return {"jsonrpc": "2.0", "id": id_, "result": _text_result(f"Upstream MCP server error: {err.message}")}
-            return _rpc_err(id_, err.code, err.message, err.data)
+                return {"jsonrpc": "2.0", "id": id_, "result": _text_result(f"Upstream MCP server error: {msg}")}
+            return _rpc_err(id_, code, msg)
         return {"jsonrpc": "2.0", "id": id_, "result": res}
     if method == "resources/read":
         uri = str(params.get("uri") or "")
@@ -162,7 +175,7 @@ async def handle(gw: McpGateway, key, msg: dict) -> Optional[dict]:
             return _rpc_err(id_, -32002, f"Resource not found: {uri}")
         res, err = await _forward(gw, key, method, uri, entry, lambda s: s.read_resource(entry["upstream"]))
         if err is not None:
-            return _rpc_err(id_, err.code, err.message, err.data)
+            return _rpc_err(id_, *public_error(err))
         for c in res.get("contents") or []:      # report the gateway's uri, not the upstream one
             if isinstance(c, dict):
                 c["uri"] = uri
@@ -174,7 +187,7 @@ async def handle(gw: McpGateway, key, msg: dict) -> Optional[dict]:
             return _rpc_err(id_, -32602, f"Unknown prompt: {name}")
         res, err = await _forward(gw, key, method, name, entry, lambda s: s.get_prompt(entry["upstream"], params.get("arguments")))
         if err is not None:
-            return _rpc_err(id_, err.code, err.message, err.data)
+            return _rpc_err(id_, *public_error(err))
         return {"jsonrpc": "2.0", "id": id_, "result": res}
     return _rpc_err(id_, -32601, f"Method not found: {method}")
 
