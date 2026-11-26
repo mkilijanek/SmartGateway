@@ -102,7 +102,10 @@ def logs(limit: int = Query(100, le=1000), gateway_id: int | None = None, only_e
 
 @router.websocket("/ws")
 async def ws(sock: WebSocket):
-    from ..main import request_authed
+    from ..main import origin_ok, request_authed
+    if not origin_ok(sock.headers):
+        await sock.close(code=4403)
+        return
     if not request_authed(sock.headers, sock.cookies):
         await sock.close(code=4401)
         return
