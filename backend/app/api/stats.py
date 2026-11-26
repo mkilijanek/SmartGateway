@@ -103,7 +103,7 @@ def logs(limit: int = Query(100, le=1000), gateway_id: int | None = None, only_e
 @router.websocket("/ws")
 async def ws(sock: WebSocket):
     from ..main import request_authed
-    if not request_authed(sock.headers, sock.cookies):
+    if not await asyncio.to_thread(request_authed, sock.headers, sock.cookies):
         await sock.close(code=4401)
         return
     await sock.accept()
