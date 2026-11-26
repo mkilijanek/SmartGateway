@@ -13,6 +13,7 @@ from ..router import health
 from ..router.scheduler import scheduler
 
 router = APIRouter(prefix="/api")
+RECHECK_EVERY = 30   # seconds between re-validating the session of an open websocket
 MAX_MINUTES = 7 * 1440
 
 
@@ -119,8 +120,17 @@ async def ws(sock: WebSocket):
             await sock.send_text(json.dumps({"type": "snapshot", **live_snapshot(s)}))
 
         async def ticker():
+            n = 0
             while True:
                 await asyncio.sleep(1.0)
+                n += 1
+                if n % RECHECK_EVERY == 0 and not await asyncio.to_thread(request_authed, sock.headers, sock.cookies):
+                    try:
+                        q.put_nowait(None)   # logged out / session revoked / password changed: wake the loop below so it closes the socket
+                    except asyncio.QueueFull:   # a slow client has a backlog: drop its oldest event to make room for the signal
+                        q.get_nowait()
+                        q.put_nowait(None)
+                    return
                 with session() as s2:
                     await sock.send_text(json.dumps({"type": "snapshot", **live_snapshot(s2)}))
 
@@ -128,6 +138,9 @@ async def ws(sock: WebSocket):
         try:
             while True:
                 ev = await q.get()
+                if ev is None:
+                    await sock.close(code=4401)
+                    break
                 await sock.send_text(json.dumps(ev, default=str))
         finally:
             t.cancel()

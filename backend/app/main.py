@@ -23,7 +23,7 @@ from .bodylimit import BodyLimit
 from .api import compression as compression_api, mcp_endpoints as mcp_endpoints_api, mcp_gateways as mcp_gateways_api, content_filters as content_filters_api, endpoints, gateways, insights as insights_api, maintenance as maintenance_api, settings as settings_api, stats, stress as stress_api, unified as unified_api
 from .db import engine, init_db, session
 from .mcp import registry as mcp_registry, server as mcp_server
-from .models import Endpoint, McpEndpoint
+from .models import AdminSession, Endpoint, McpEndpoint
 from .router import health
 
 
@@ -67,22 +67,57 @@ SESSION_TTL = 7 * 86400
 _fails: dict[str, list] = {}
 
 
-def _sign(exp: int) -> str:
+def _sign(exp: int, sid: str) -> str:
     # the password is part of the signed text, so changing SG_ADMIN_PASSWORD signs every existing session out
     pw = hmac.new(crypto._load_secret(), b"pw:" + config.ADMIN_PASSWORD.encode(), hashlib.sha256).hexdigest()   # keyed, not a bare hash of the password
-    return hmac.new(crypto._load_secret(), f"admin:{exp}:{pw}".encode(), hashlib.sha256).hexdigest()
+    return hmac.new(crypto._load_secret(), f"admin:{exp}:{sid}:{pw}".encode(), hashlib.sha256).hexdigest()
 
 
 def make_session() -> str:
-    exp = int(time.time()) + SESSION_TTL
-    return f"{exp}.{_sign(exp)}"
+    """Cookie value `exp.sid.sig`; the random sid is registered server-side so this one session can be revoked."""
+    now = int(time.time())
+    exp, sid = now + SESSION_TTL, secrets.token_urlsafe(16)
+    with session() as s:
+        for old in s.exec(select(AdminSession).where(AdminSession.exp < now)).all():   # forget expired sessions
+            s.delete(old)
+        s.add(AdminSession(sid=sid, exp=exp))
+        s.commit()
+    return f"{exp}.{sid}.{_sign(exp, sid)}"
+
+
+def _parse(token: str | None):
+    exp, sid, sig = (token or "").split(".", 2)
+    return int(exp), sid, sig
 
 
 def valid_session(token: str | None) -> bool:
     try:
-        exp, sig = (token or "").split(".", 1)
-        return int(exp) > time.time() and hmac.compare_digest(sig, _sign(int(exp)))
+        exp, sid, sig = _parse(token)
+        if not (exp > time.time() and hmac.compare_digest(sig, _sign(exp, sid))):
+            return False
+        with session() as s:
+            return s.get(AdminSession, sid) is not None
     except Exception:  # noqa: BLE001
+        return False
+
+
+def revoke_session(token: str | None = None, everyone: bool = False) -> bool:
+    """True when the session(s) are gone (or never existed); False if the registry could not be updated."""
+    try:
+        with session() as s:
+            if everyone:
+                rows = s.exec(select(AdminSession)).all()
+            else:
+                row = s.get(AdminSession, _parse(token)[1]) if token else None
+                rows = [row] if row else []
+            for r in rows:
+                s.delete(r)
+            s.commit()
+        return True
+    except ValueError:   # a malformed token has no session behind it
+        return True
+    except Exception:  # noqa: BLE001
+        logging.getLogger("smartgateway").warning("could not revoke the admin session", exc_info=True)
         return False
 
 
@@ -254,6 +289,7 @@ def change_password(body: PasswordIn, request: Request):
     if body.new == body.current:
         raise HTTPException(400, "The new password must differ from the current one")
     config.set_admin_password(body.new)
+    revoke_session(everyone=True)   # the password is part of every signature anyway; also drop the rows
     _fails.pop(ip, None)
     r = JSONResponse({"ok": True})   # every other session is now invalid; keep this browser signed in
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
@@ -282,7 +318,9 @@ def login(body: LoginIn, request: Request):
 
 
 @app.post("/api/logout")
-def logout():
+def logout(request: Request):
+    if not revoke_session(request.cookies.get(COOKIE)):   # server side: a copy of the cookie stops working too
+        return JSONResponse({"detail": "Could not end the session, try again"}, status_code=500)
     r = JSONResponse({"ok": True})
     r.delete_cookie(COOKIE)
     return r
