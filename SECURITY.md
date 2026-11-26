@@ -5,14 +5,15 @@ can call tools through MCP. Reports about it are taken seriously, and a good rep
 
 ## Supported versions
 
-SmartGateway has no long-term-support branches. Fixes land on `main` and are released from there.
+SmartGateway has no tagged releases and no long-term-support branches yet; fixes land on `main` (currently version 2.1).
 
 | Version | Supported |
 | ------- | --------- |
-| `main` and the latest release (2.x) | Yes |
-| Anything older | No - please update first |
+| `main` | Yes |
+| Older commits and builds | No - please update first |
 
-If you run a build from source, run the current `main`. Check that the problem still exists there before reporting it.
+Please check that the problem still exists on the current `main` before reporting it. Once releases are tagged, the latest one will be
+supported as well.
 
 ## Reporting a vulnerability
 
@@ -35,7 +36,7 @@ Do not include real secrets, other people's data, or anything from a system you 
 
 ### What to expect
 
-SmartGateway is maintained by volunteers, so these are targets, not guarantees:
+SmartGateway is maintained by volunteers, so these are targets, not guarantees (the maintainers may adjust them):
 
 | Step | Target |
 | ---- | ------ |
@@ -48,7 +49,7 @@ We will tell you if a date slips. If a report is declined we will explain why; y
 
 ### Disclosure
 
-We prefer coordinated disclosure: fix first, publish afterwards. Once a fix is released we publish a GitHub security advisory (and
+We prefer coordinated disclosure: fix first, publish afterwards. Once a fix is merged we publish a GitHub security advisory (and
 request a CVE where one is warranted) that credits you unless you ask us not to. If a report is not fixed within **90 days** you
 may publish your findings; please tell us beforehand.
 
@@ -91,7 +92,7 @@ This is the intended security model, so you can tell a bug from a design choice:
   (back up `secret.key` / `SG_SECRET_KEY` with the database);
 - state-changing admin requests are checked for their origin, failed logins are rate-limited, request bodies and MCP responses are
   size-limited, and public error messages are generic;
-- the container runs as a non-root user and its dependencies are pinned.
+- the container runs as a non-root user and the Python dependencies are pinned (`backend/requirements.txt`).
 
 A deployment checklist lives in the README (*Exposing it to the internet*). Each deployment is still the operator's responsibility:
 keep it updated, put TLS in front, and give every public gateway an API key.
