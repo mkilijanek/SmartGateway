@@ -310,3 +310,4 @@ def test_dashboard_mcp_stats(client, servers):
     assert d["tools"][0]["name"] == "a__search" and d["tools"][0]["calls"] == 3
     assert any(g["id"] == gw["id"] and g["calls"] == 4 for g in d["gateways"])
     assert sum(b["calls"] for b in d["timeline"]) == d["totals"]["calls"]
+
