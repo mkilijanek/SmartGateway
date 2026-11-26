@@ -182,14 +182,21 @@ def apply_input(route: str, body: dict, cfg: Optional[dict], rules=()) -> InputR
                 if icfg["mode"] == "block":
                     state["blocked"].append("prompt injection")
         for rule in rules:
-            n = len(filters.find(rule, text))
+            try:
+                found_ms = filters.find(rule, text)
+            except filters.FilterTimeout:   # cannot tell whether the text is clean or redact it: fail closed
+                name = rule.get("name") or rule["pattern"][:30]
+                bump("filter_timeout:" + name)
+                state["blocked"].append(f"content filter '{name}' (pattern too slow on this text)")
+                continue
+            n = len(found_ms)
             if n:
                 name = rule.get("name") or rule["pattern"][:30]
                 bump("filter:" + name, n)
                 if rule.get("action", "block") == "block":
                     state["blocked"].append(f"content filter '{name}'")
                 else:
-                    text = filters.redact(rule, text)
+                    text = filters.redact(rule, text, matches=found_ms)
         if pcfg["mode"] != "off":
             found = pii.scan(text, pcfg["types"])
             for f in found:
@@ -257,7 +264,15 @@ def check_output(data: dict, cfg: dict, body: dict, rules=()) -> OutputResult:
                 res.ok, res.error, res.action = False, "the reply is empty", "failed"
             continue
         for rule in rules:
-            n = len(filters.find(rule, text))
+            try:
+                found_ms = filters.find(rule, text)
+            except filters.FilterTimeout:
+                name = rule.get("name") or rule["pattern"][:30]
+                res.findings["filter_timeout:" + name] = res.findings.get("filter_timeout:" + name, 0) + 1
+                res.blocked, res.ok, res.action = True, False, "blocked"
+                res.error = f"content filter '{name}' (pattern too slow on this text)"
+                continue
+            n = len(found_ms)
             if not n:
                 continue
             name = rule.get("name") or rule["pattern"][:30]
@@ -266,7 +281,7 @@ def check_output(data: dict, cfg: dict, body: dict, rules=()) -> OutputResult:
                 res.blocked, res.ok, res.action = True, False, "blocked"
                 res.error = f"content filter '{name}'"
             else:
-                text = filters.redact(rule, text)
+                text = filters.redact(rule, text, matches=found_ms)
                 msg["content"] = text
                 if res.action == "validated":
                     res.action = "redacted"

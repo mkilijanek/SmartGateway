@@ -14,6 +14,7 @@ from ..router.scheduler import scheduler
 
 router = APIRouter(prefix="/api")
 RECHECK_EVERY = 30   # seconds between re-validating the session of an open websocket
+MAX_MINUTES = 7 * 1440
 
 
 def live_snapshot(s: Session) -> dict:
@@ -42,6 +43,7 @@ def _pct(vals: list, p: float):
 
 @router.get("/stats")
 def stats(minutes: int = 60, gateway_id: int | None = None, gateway_ids: str | None = None, s: Session = Depends(get_session)):
+    minutes = max(1, min(minutes, MAX_MINUTES))   # 0 divided by zero below; unbounded values loaded the whole request log
     since = time.time() - minutes * 60
     q = select(RequestLog).where(RequestLog.ts >= since)
     if gateway_id:
@@ -104,7 +106,7 @@ def logs(limit: int = Query(100, le=1000), gateway_id: int | None = None, only_e
 @router.websocket("/ws")
 async def ws(sock: WebSocket):
     from ..main import request_authed
-    if not request_authed(sock.headers, sock.cookies):
+    if not await asyncio.to_thread(request_authed, sock.headers, sock.cookies):
         await sock.close(code=4401)
         return
     await sock.accept()
