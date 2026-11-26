@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from .. import config, discovery
+from .. import config, crypto, discovery
 from ..db import get_session
 from ..models import Endpoint, GatewayModel, Member, Model
 from ..router import health
@@ -37,6 +37,7 @@ def ep_out(ep: Endpoint, s: Session) -> dict:
     models = s.exec(select(Model).where(Model.endpoint_id == ep.id)).all()
     d = ep.model_dump()
     d["api_key"] = bool(ep.api_key)
+    d["key_unreadable"] = crypto.is_unreadable(ep.api_key)
     d["models"] = [m.model_dump() for m in models]
     return d
 
@@ -51,7 +52,13 @@ def _delete_model(s: Session, m: Model) -> None:
     s.delete(m)
 
 
+def _need_readable_key(ep: Endpoint) -> None:
+    if crypto.is_unreadable(ep.api_key):
+        raise HTTPException(409, "The stored API key of this endpoint cannot be decrypted (secret.key / SG_SECRET_KEY changed?). Enter the key again.")
+
+
 async def sync_models(ep: Endpoint, s: Session, probe: bool, free_out: Optional[list] = None) -> int:
+    _need_readable_key(ep)
     ep.provider = ep.provider or discovery.detect_provider(ep.base_url)
     found = await discovery.discover(ep.base_url, ep.api_key, probe and not ep.provider, ep.provider)
     ep.slot_source = "none" if ep.provider else await discovery.detect_slot_source(ep.base_url, ep.api_key)
@@ -157,6 +164,8 @@ async def rescan(ep_id: int, probe: bool = True, s: Session = Depends(get_sessio
         raise HTTPException(404)
     try:
         await sync_models(ep, s, probe)
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"Model discovery failed: {e}")
     await health.check_endpoint(ep_id)
@@ -186,6 +195,7 @@ async def refresh_voices(model_id: int, s: Session = Depends(get_session)):
         raise HTTPException(404)
     if "tts" not in (m.capabilities or []):
         raise HTTPException(400, "Only text-to-speech models have voices")
+    _need_readable_key(ep)
     voices = await discovery.fetch_voices(ep.base_url, ep.api_key, ep.provider, m.upstream_id)
     if voices is None:
         raise HTTPException(400, "The upstream did not return a voice list (GET /audio/voices). Type the voice names in the gateway editor instead.")
