@@ -2,7 +2,7 @@
 import re
 import secrets
 import time
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ class GatewayIn(BaseModel):
     name: str
     slug: Optional[str] = None
     description: Optional[str] = None
+    session_scope: Literal["shared", "key"] = "shared"
     members: list[MemberIn] = []
 
 
@@ -65,7 +66,7 @@ def _apply(gw: McpGateway, body: GatewayIn, s: Session):
 def gw_out(gw: McpGateway, s: Session) -> dict:
     d = gw.model_dump()
     d["path"] = f"/mcp/{gw.slug}"
-    d["has_keys"] = s.exec(select(McpApiKey).where(McpApiKey.gateway_id == gw.id, McpApiKey.enabled == True)).first() is not None  # noqa: E712
+    d["has_keys"] = s.exec(select(McpApiKey).where(McpApiKey.gateway_id == gw.id)).first() is not None   # any key (even disabled) keeps the gateway closed
     d["members"] = []
     for m in s.exec(select(McpGatewayMember).where(McpGatewayMember.gateway_id == gw.id).order_by(McpGatewayMember.id)).all():
         ep = s.get(McpEndpoint, m.endpoint_id)
@@ -97,7 +98,7 @@ def create_gateway(body: GatewayIn, s: Session = Depends(get_session)):
     slug = slugify(body.slug or body.name)
     if s.exec(select(McpGateway).where(McpGateway.slug == slug)).first():
         raise HTTPException(400, f"Slug '{slug}' already in use")
-    gw = McpGateway(slug=slug, name=body.name.strip(), description=body.description or None)
+    gw = McpGateway(slug=slug, name=body.name.strip(), description=body.description or None, session_scope=body.session_scope)
     s.add(gw)
     s.flush()
     _apply(gw, body, s)
@@ -117,6 +118,7 @@ def update_gateway(gw_id: int, body: GatewayIn, s: Session = Depends(get_session
     if other and other.id != gw.id:
         raise HTTPException(400, f"Slug '{slug}' already in use")
     gw.slug, gw.name, gw.description = slug, body.name.strip(), body.description or None
+    gw.session_scope = body.session_scope
     s.add(gw)
     _apply(gw, body, s)
     s.commit()
@@ -164,6 +166,8 @@ class KeyIn(BaseModel):
     expires_at: Optional[float] = None
     rpm_limit: Optional[int] = None
     allowed_tools: Optional[list[str]] = None
+    allowed_resources: Optional[list[str]] = None    # None = every resource (and template) of the gateway
+    allowed_prompts: Optional[list[str]] = None      # None = every prompt of the gateway
 
 
 def key_out(k: McpApiKey) -> dict:

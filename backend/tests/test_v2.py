@@ -109,7 +109,7 @@ def test_crypto_roundtrip_and_legacy_plaintext():
     t = crypto.EncryptedString()
     assert t.process_bind_param("abc", None).startswith("enc:") and t.process_bind_param(None, None) is None
     assert t.process_result_value(t.process_bind_param("abc", None), None) == "abc"
-    assert t.process_result_value("enc:not-a-valid-token", None) is None  # unreadable secret must not crash the app
+    assert crypto.is_unreadable(t.process_result_value("enc:not-a-valid-token", None))  # unreadable secret must not crash the app, nor read as "no secret"
 
 
 def test_schema_migration_and_legacy_key(tmp_path, monkeypatch):

@@ -4,7 +4,7 @@ services:
     ports:
       - "${SG_BIND:-0.0.0.0}:${SG_PORT:-8080}:8080"   # SG_BIND=127.0.0.1 publishes the port on this host only (put a TLS reverse proxy in front)
     environment:
-      SG_ADMIN_PASSWORD: "${SG_ADMIN_PASSWORD:-}"   # login for the UI + management API; if empty a random password is generated and printed in `docker compose logs`
+      SG_ADMIN_PASSWORD: "${SG_ADMIN_PASSWORD:-}"   # login for the UI + management API; if empty a random password is generated and printed once in `docker compose logs` (later starts only mention /data/admin_password)
       SG_ADMIN_USER: "${SG_ADMIN_USER:-admin}"
       SG_SECRET_KEY: "${SG_SECRET_KEY:-}"            # encrypts upstream API keys; default: auto-generated /data/secret.key
       SG_CORS_ORIGINS: "${SG_CORS_ORIGINS:-}"        # e.g. https://app.example.com (or *) for browser clients of /gw and /v1

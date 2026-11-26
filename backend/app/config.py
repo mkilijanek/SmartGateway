@@ -10,22 +10,68 @@ ADMIN_PASSWORD = os.environ.get("SG_ADMIN_PASSWORD", "")
 ALLOW_OPEN_ADMIN = os.environ.get("SG_ALLOW_OPEN_ADMIN", "").lower() in ("1", "true", "yes")
 PASSWORD_SOURCE = "env" if ADMIN_PASSWORD else "open"
 GENERATED_ADMIN_PASSWORD = False
+GENERATED_ADMIN_PASSWORD_IS_NEW = False   # True only on the start that created the password; later starts must not print it again
 MIN_PASSWORD = 10
 
 
-def _hash_password(pw: str) -> str:
-    import base64, hashlib, secrets
+LEGACY_COST = (14, 8, 1)          # log2(N), r, p of the first hash format ("scrypt$salt$hash"), which carried no parameters
+MIN_LOG_N, MAX_LOG_N = 14, 16     # 2**14 = the historic cost (16 MB); 2**16 = 64 MB per verification
+
+
+def configured_log_n() -> int:
+    """Cost for new password hashes: Settings > Security (password_hash_log_n), default 14 = unchanged."""
+    try:
+        from . import settings_store
+        n = int(settings_store.get_cached().get("password_hash_log_n") or MIN_LOG_N)
+    except Exception:  # noqa: BLE001 - never block a login because the setting cannot be read
+        n = MIN_LOG_N
+    return max(MIN_LOG_N, min(MAX_LOG_N, n))
+
+
+def _scrypt(pw: str, salt: bytes, log_n: int, r: int, p: int) -> bytes:
+    import hashlib
+    n = 1 << log_n
+    return hashlib.scrypt(pw.encode(), salt=salt, n=n, r=r, p=p, dklen=32, maxmem=130 * n * r + (1 << 20))
+
+
+def _hash_password(pw: str, log_n: int | None = None) -> str:
+    """Versioned format: scrypt$<log2 N>$<r>$<p>$salt$hash (the parameters travel with the hash, so the cost can be raised later)."""
+    import base64, secrets
+    log_n = log_n or configured_log_n()
     salt = secrets.token_bytes(16)
-    h = hashlib.scrypt(pw.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
-    return "scrypt$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(h).decode()
+    h = _scrypt(pw, salt, log_n, 8, 1)
+    return f"scrypt${log_n}${8}${1}$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(h).decode()
+
+
+def _parse_hash(stored: str):
+    """(log_n, r, p, salt_b64, hash_b64) for both the versioned and the legacy three-part format."""
+    parts = stored.split("$")
+    if len(parts) == 3:
+        return (*LEGACY_COST, parts[1], parts[2])
+    _, ln, r, p, salt, h = parts
+    return int(ln), int(r), int(p), salt, h
+
+
+import threading
+_SCRYPT_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SG_MAX_PASSWORD_CHECKS", "4")))   # each check needs ~16 MiB and a CPU core
 
 
 def _check_hash(pw: str, stored: str) -> bool:
-    import base64, hashlib, hmac
+    import base64, hmac
     try:
-        _, salt, h = stored.split("$")
-        got = hashlib.scrypt(pw.encode(), salt=base64.b64decode(salt), n=2 ** 14, r=8, p=1, dklen=32)
+        ln, r, p, salt, h = _parse_hash(stored)
+        if not (MIN_LOG_N <= ln <= MAX_LOG_N) or r != 8 or p != 1:    # a stored hash is trusted, but not with unbounded memory
+            return False
+        with _SCRYPT_SLOTS:   # at most a few verifications at once, however many requests are trying passwords
+            got = _scrypt(pw, base64.b64decode(salt), ln, r, p)
         return hmac.compare_digest(got, base64.b64decode(h))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def needs_rehash(stored: str) -> bool:
+    try:
+        return _parse_hash(stored)[0] < configured_log_n()
     except Exception:  # noqa: BLE001
         return False
 
@@ -35,12 +81,19 @@ def verify_password(candidate: str) -> bool:
     if not ADMIN_PASSWORD:
         return True
     if PASSWORD_SOURCE == "ui":
-        return _check_hash(candidate, ADMIN_PASSWORD)
+        if not _check_hash(candidate, ADMIN_PASSWORD):
+            return False
+        if needs_rehash(ADMIN_PASSWORD):    # the cost was raised (or the hash is the legacy format): upgrade it now that the password is known
+            try:
+                set_admin_password(candidate)
+            except Exception:  # noqa: BLE001 - the login itself succeeded
+                pass
+        return True
     return secrets.compare_digest(candidate.encode(), ADMIN_PASSWORD.encode())
 
 
 def ensure_admin_password() -> None:
-    global ADMIN_PASSWORD, GENERATED_ADMIN_PASSWORD, PASSWORD_SOURCE
+    global ADMIN_PASSWORD, GENERATED_ADMIN_PASSWORD, GENERATED_ADMIN_PASSWORD_IS_NEW, PASSWORD_SOURCE
     if ADMIN_PASSWORD or ALLOW_OPEN_ADMIN:
         return
     import secrets
@@ -51,7 +104,8 @@ def ensure_admin_password() -> None:
             ADMIN_PASSWORD, PASSWORD_SOURCE = f.read().strip(), "ui"
         return
     path = os.path.join(DATA_DIR, "admin_password")
-    if not os.path.exists(path):
+    GENERATED_ADMIN_PASSWORD_IS_NEW = not os.path.exists(path)
+    if GENERATED_ADMIN_PASSWORD_IS_NEW:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(secrets.token_urlsafe(18))
