@@ -1,5 +1,5 @@
 # ---- frontend build ----
-FROM node:22-alpine AS ui
+FROM node:26-alpine AS ui
 WORKDIR /ui
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --no-audit --no-fund
