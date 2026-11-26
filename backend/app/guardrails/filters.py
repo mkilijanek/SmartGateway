@@ -1,8 +1,21 @@
 """User-defined content filter rules (regex)."""
-import re
+import os
+import time
 from functools import lru_cache
 
+import regex as re   # same syntax as the stdlib module, plus a match timeout: a user-written pattern with catastrophic backtracking can't hang a request
+
 from . import checks
+
+
+MATCH_TIMEOUT = float(os.environ.get("SG_FILTER_REGEX_TIMEOUT_MS", "200")) / 1000   # per rule and text
+# adversarial inputs for backtracking patterns; a rule that is slow on these is rejected when it is saved
+PROBES = ("a" * 4000 + "!", "ab" * 3000 + "!", " " * 4000 + "x", "1" * 4000 + "x", "a@" * 2000 + "!")
+PROBE_TIMEOUT = 0.05
+
+
+class FilterTimeout(Exception):
+    """The pattern took too long on this text; the caller must not treat the text as clean."""
 
 
 @lru_cache(maxsize=256)
@@ -22,6 +35,11 @@ def validate_rule(rule: dict) -> None:
         raise ValueError(f"invalid filter regex '{pat}': {e}")
     if rx.match(""):
         raise ValueError(f"filter regex '{pat}' matches empty text")
+    for probe in PROBES:
+        try:
+            list(rx.finditer(probe, timeout=PROBE_TIMEOUT))
+        except TimeoutError:
+            raise ValueError(f"filter regex '{pat}' is too slow (catastrophic backtracking); simplify it, e.g. avoid nested repetition like (a+)+")
     if rule.get("validator") and rule["validator"] not in checks.VALIDATORS:
         raise ValueError(f"unknown validation '{rule['validator']}'; known: {sorted(checks.VALIDATORS)}")
     if rule.get("stage", "both") not in ("input", "output", "both"):
@@ -34,17 +52,22 @@ def find(rule: dict, text: str) -> list:
     """Matches of the rule in text. With a validator, only structurally valid numbers count (e.g. a PESEL with a correct checksum).
     A pattern may name a group (?P<n>...) for the number itself, so that a label in front of it is not validated."""
     check = checks.get(rule.get("validator"))
-    out = []
-    for m in compile_rule(rule["pattern"]).finditer(text):
-        if check and not check(m.groupdict().get("n") or m.group(0)):
-            continue
-        out.append(m)
+    out, deadline = [], time.monotonic() + MATCH_TIMEOUT
+    try:
+        for m in compile_rule(rule["pattern"]).finditer(text, timeout=MATCH_TIMEOUT):
+            if time.monotonic() > deadline:
+                raise TimeoutError
+            if check and not check(m.groupdict().get("n") or m.group(0)):
+                continue
+            out.append(m)
+    except TimeoutError:
+        raise FilterTimeout(rule.get("name") or rule["pattern"][:30]) from None
     return out
 
 
-def redact(rule: dict, text: str, repl: str = "[FILTERED]") -> str:
+def redact(rule: dict, text: str, repl: str = "[FILTERED]", matches: list | None = None) -> str:
     out, pos = [], 0
-    for m in find(rule, text):
+    for m in (find(rule, text) if matches is None else matches):
         out.append(text[pos:m.start()])
         out.append(repl)
         pos = m.end()
