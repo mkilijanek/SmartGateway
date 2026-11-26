@@ -287,6 +287,8 @@ class McpApiKey(SQLModel, table=True):
     expires_at: Optional[float] = None
     rpm_limit: Optional[int] = None
     allowed_tools: Optional[list] = Field(default=None, sa_column=Column(JSON))  # exposed tool names; None = all
+    allowed_resources: Optional[list] = Field(default=None, sa_column=Column(JSON))  # exposed resource uris / template names; None = all
+    allowed_prompts: Optional[list] = Field(default=None, sa_column=Column(JSON))  # exposed prompt names; None = all
     created_at: float = Field(default_factory=time.time)
     last_used: Optional[float] = None
 
@@ -303,3 +305,10 @@ class McpCallLog(SQLModel, table=True):
     ok: bool = True
     total_ms: int = 0
     error: Optional[str] = None
+
+
+class AdminSession(SQLModel, table=True):
+    """A signed-in admin browser session. The cookie is only honoured while its row exists, so logout and password change can end it."""
+    sid: str = Field(primary_key=True)
+    exp: float = Field(index=True)
+    created_at: float = Field(default_factory=time.time)

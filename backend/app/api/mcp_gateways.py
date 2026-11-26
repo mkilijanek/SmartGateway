@@ -66,7 +66,7 @@ def _apply(gw: McpGateway, body: GatewayIn, s: Session):
 def gw_out(gw: McpGateway, s: Session) -> dict:
     d = gw.model_dump()
     d["path"] = f"/mcp/{gw.slug}"
-    d["has_keys"] = s.exec(select(McpApiKey).where(McpApiKey.gateway_id == gw.id, McpApiKey.enabled == True)).first() is not None  # noqa: E712
+    d["has_keys"] = s.exec(select(McpApiKey).where(McpApiKey.gateway_id == gw.id)).first() is not None   # any key (even disabled) keeps the gateway closed
     d["members"] = []
     for m in s.exec(select(McpGatewayMember).where(McpGatewayMember.gateway_id == gw.id).order_by(McpGatewayMember.id)).all():
         ep = s.get(McpEndpoint, m.endpoint_id)
@@ -166,6 +166,8 @@ class KeyIn(BaseModel):
     expires_at: Optional[float] = None
     rpm_limit: Optional[int] = None
     allowed_tools: Optional[list[str]] = None
+    allowed_resources: Optional[list[str]] = None    # None = every resource (and template) of the gateway
+    allowed_prompts: Optional[list[str]] = None      # None = every prompt of the gateway
 
 
 def key_out(k: McpApiKey) -> dict:
