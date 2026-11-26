@@ -9,11 +9,12 @@ def test_without_password_one_is_generated_and_kept(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ALLOW_OPEN_ADMIN", False)
     config.ensure_admin_password()
     first = config.ADMIN_PASSWORD
-    assert len(first) >= 20 and config.GENERATED_ADMIN_PASSWORD
+    assert len(first) >= 20 and config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW
     assert oct(os.stat(tmp_path / "admin_password").st_mode & 0o777) == "0o600"
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "")
     config.ensure_admin_password()
     assert config.ADMIN_PASSWORD == first            # stable across restarts
+    assert not config.GENERATED_ADMIN_PASSWORD_IS_NEW   # ... and not announced again (the start-up log only prints it for a new one)
 
 
 def test_explicit_password_and_open_opt_in_are_respected(tmp_path, monkeypatch):
