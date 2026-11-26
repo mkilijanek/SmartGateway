@@ -286,6 +286,8 @@ class McpApiKey(SQLModel, table=True):
     expires_at: Optional[float] = None
     rpm_limit: Optional[int] = None
     allowed_tools: Optional[list] = Field(default=None, sa_column=Column(JSON))  # exposed tool names; None = all
+    allowed_resources: Optional[list] = Field(default=None, sa_column=Column(JSON))  # exposed resource uris / template names; None = all
+    allowed_prompts: Optional[list] = Field(default=None, sa_column=Column(JSON))  # exposed prompt names; None = all
     created_at: float = Field(default_factory=time.time)
     last_used: Optional[float] = None
 

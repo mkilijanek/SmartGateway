@@ -63,6 +63,12 @@ def authenticate(slug: str, request: Request):
         return gw, key, None
 
 
+def _allowed(key, field: str, name: str) -> bool:
+    """A key's list for one kind of item; None (the default) allows all."""
+    lst = getattr(key, field, None) if key else None
+    return lst is None or name in lst
+
+
 def _over_rpm(key) -> bool:
     if not key or not key.rpm_limit:
         return False
@@ -152,10 +158,10 @@ async def handle(gw: McpGateway, key, msg: dict) -> Optional[dict]:
             allowed = set(key.allowed_tools) if key and key.allowed_tools is not None else None
             return {"jsonrpc": "2.0", "id": id_, "result": {"tools": [t["definition"] for t in cat["tools"] if allowed is None or t["name"] in allowed]}}
         if method == "resources/list":
-            return {"jsonrpc": "2.0", "id": id_, "result": {"resources": [r["definition"] for r in cat["resources"]]}}
+            return {"jsonrpc": "2.0", "id": id_, "result": {"resources": [r["definition"] for r in cat["resources"] if _allowed(key, "allowed_resources", r["name"])]}}
         if method == "resources/templates/list":
-            return {"jsonrpc": "2.0", "id": id_, "result": {"resourceTemplates": [r["definition"] for r in cat["templates"]]}}
-        return {"jsonrpc": "2.0", "id": id_, "result": {"prompts": [r["definition"] for r in cat["prompts"]]}}
+            return {"jsonrpc": "2.0", "id": id_, "result": {"resourceTemplates": [r["definition"] for r in cat["templates"] if _allowed(key, "allowed_resources", r["name"])]}}
+        return {"jsonrpc": "2.0", "id": id_, "result": {"prompts": [r["definition"] for r in cat["prompts"] if _allowed(key, "allowed_prompts", r["name"])]}}
     if method == "tools/call":
         name = str(params.get("name") or "")
         entry = registry.resolve(gw.id, "tool", name)
@@ -171,7 +177,7 @@ async def handle(gw: McpGateway, key, msg: dict) -> Optional[dict]:
     if method == "resources/read":
         uri = str(params.get("uri") or "")
         entry = registry.resolve(gw.id, "resource", uri)
-        if entry is None:
+        if entry is None or not _allowed(key, "allowed_resources", entry["name"]):
             return _rpc_err(id_, -32002, f"Resource not found: {uri}")
         res, err = await _forward(gw, key, method, uri, entry, lambda s: s.read_resource(entry["upstream"]))
         if err is not None:
@@ -183,7 +189,7 @@ async def handle(gw: McpGateway, key, msg: dict) -> Optional[dict]:
     if method == "prompts/get":
         name = str(params.get("name") or "")
         entry = registry.resolve(gw.id, "prompt", name)
-        if entry is None:
+        if entry is None or not _allowed(key, "allowed_prompts", name):
             return _rpc_err(id_, -32602, f"Unknown prompt: {name}")
         res, err = await _forward(gw, key, method, name, entry, lambda s: s.get_prompt(entry["upstream"], params.get("arguments")))
         if err is not None:

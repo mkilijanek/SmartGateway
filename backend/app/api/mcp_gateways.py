@@ -164,6 +164,8 @@ class KeyIn(BaseModel):
     expires_at: Optional[float] = None
     rpm_limit: Optional[int] = None
     allowed_tools: Optional[list[str]] = None
+    allowed_resources: Optional[list[str]] = None    # None = every resource (and template) of the gateway
+    allowed_prompts: Optional[list[str]] = None      # None = every prompt of the gateway
 
 
 def key_out(k: McpApiKey) -> dict:
