@@ -7,7 +7,7 @@ import itertools
 import json
 import os
 from typing import Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -20,11 +20,36 @@ CLIENT_INFO = {"name": "smartgateway", "version": "1.0"}
 _http: Optional[httpx.AsyncClient] = None
 
 
+def _origin(url) -> tuple:
+    try:
+        u = urlsplit(str(url))
+        return u.scheme.lower(), (u.hostname or "").lower(), u.port or {"http": 80, "https": 443}.get(u.scheme.lower())
+    except ValueError:   # malformed port etc.: never equal to a real origin
+        return ("?", str(url), None)
+
+
+def _allowed_redirect(src, dst) -> bool:
+    """Same origin, or the same host upgrading http -> https on the default ports (the usual reverse-proxy setup)."""
+    return src == dst or (src[0] == "http" and dst[0] == "https" and src[1] == dst[1] and src[2] == 80 and dst[2] == 443)
+
+
+async def _same_origin_redirects(response: httpx.Response) -> None:
+    """Endpoint headers are secrets: never let a redirect carry them to another origin (httpx only strips Authorization)."""
+    if response.is_redirect:
+        loc = response.headers.get("location", "")
+        if not _allowed_redirect(_origin(response.request.url), _origin(urljoin(str(response.request.url), loc))):
+            raise McpError("The MCP server redirected to a different origin; refusing to follow", -32000, {"status": response.status_code})
+
+
+def new_http(**kw) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10), follow_redirects=True, event_hooks={"response": [_same_origin_redirects]}, **kw)
+
+
 def get_http() -> httpx.AsyncClient:
     """Shared client; tests replace this function with one backed by httpx.MockTransport."""
     global _http
     if _http is None:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10), follow_redirects=True)
+        _http = new_http()
     return _http
 
 
@@ -177,7 +202,10 @@ class McpSession:
                         raise McpError(f"HTTP {r.status_code} opening the SSE stream", -32000, {"status": r.status_code})
                     async for ev, data in _events(r):
                         if ev == "endpoint":
-                            self._post_url = urljoin(self.url, data.strip())
+                            post_url = urljoin(self.url, data.strip())
+                            if _origin(post_url) != _origin(self.url):   # the server may only point us at itself, or our headers would be sent elsewhere
+                                raise McpError("The MCP server announced a message endpoint on a different origin; refusing to use it")
+                            self._post_url = post_url
                             if not ready.done():
                                 ready.set_result(True)
                         elif ev == "message":

@@ -317,6 +317,83 @@ def test_dashboard_mcp_stats(client, servers):
     assert sum(b["calls"] for b in d["timeline"]) == d["totals"]["calls"]
 
 
+# ------------------------------------------------------------------ SG-012: upstream trust boundary
+async def test_cross_origin_redirect_is_refused_and_keeps_headers_home(monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append((request.url.host, request.headers.get("x-api-key")))
+        if request.url.host == "evil.test":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+        return httpx.Response(302, headers={"location": "http://evil.test/steal"})
+
+    http = mcp_client.new_http(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_client, "get_http", lambda: http)
+    with pytest.raises(McpError, match="different origin"):
+        await McpSession("http://good.test/mcp", {"x-api-key": "SECRET"}, "streamable_http").ensure()
+    assert [h for h, _ in seen] == ["good.test"]          # the redirect target was never contacted
+
+
+async def test_same_origin_redirect_still_works(monkeypatch):
+    def handler(request: httpx.Request):
+        if request.url.path == "/mcp":
+            return httpx.Response(307, headers={"location": "/mcp/"})
+        msg = json.loads(request.content)
+        if msg.get("id") is None:
+            return httpx.Response(202)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {}}})
+
+    http = mcp_client.new_http(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_client, "get_http", lambda: http)
+    s = McpSession("http://good.test/mcp", {}, "streamable_http")
+    await s.ensure()
+    assert s._ready
+
+
+async def test_sse_endpoint_event_must_stay_on_the_servers_origin(monkeypatch):
+    posts = []
+
+    def handler(request: httpx.Request):
+        if request.method == "GET":
+            return httpx.Response(200, content=b"event: endpoint\ndata: http://evil.test/collect\n\n", headers={"content-type": "text/event-stream"})
+        posts.append(request.url.host)
+        return httpx.Response(202)
+
+    http = mcp_client.new_http(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_client, "get_http", lambda: http)
+    with pytest.raises(McpError, match="different origin"):
+        await McpSession("http://good.test/sse", {"x-api-key": "SECRET"}, "legacy_sse")._open_sse()
+    assert posts == []
+
+
+async def test_https_upgrade_redirect_on_same_host_is_allowed(monkeypatch):
+    def handler(request: httpx.Request):
+        if request.url.scheme == "http":
+            return httpx.Response(308, headers={"location": "https://good.test/mcp"})
+        msg = json.loads(request.content)
+        if msg.get("id") is None:
+            return httpx.Response(202)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {}}})
+
+    http = mcp_client.new_http(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_client, "get_http", lambda: http)
+    s = McpSession("http://good.test/mcp", {}, "streamable_http")
+    await s.ensure()
+    assert s._ready
+    assert mcp_client._allowed_redirect(mcp_client._origin("http://a.test/x"), mcp_client._origin("https://a.test:8443/x")) is False
+    assert mcp_client._origin("http://a.test:notaport/x")[0] == "?"
+
+
+@pytest.mark.parametrize("announced", ["/messages", "http://good.test/messages"])
+async def test_sse_endpoint_event_same_origin_is_accepted(monkeypatch, announced):
+    def handler(request: httpx.Request):
+        return httpx.Response(200, content=f"event: endpoint\ndata: {announced}\n\n".encode(), headers={"content-type": "text/event-stream"})
+
+    http = mcp_client.new_http(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(mcp_client, "get_http", lambda: http)
+    s = McpSession("http://good.test/sse", {}, "legacy_sse")
+    await s._open_sse()
+    assert s._post_url == "http://good.test/messages"
 # ------------------------------------------------------------------ SG-013 / SG-014: batch limits and JSON-RPC validation
 def post_raw(client, path, body):
     return client.post(path, json=body)
