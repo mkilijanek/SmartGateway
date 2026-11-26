@@ -88,3 +88,4 @@ def test_upstream_errors_are_generic_for_the_public_but_detailed_for_admin():
         assert "10.0.0.7" in proxy.public_error(secret, 2)
     finally:
         verbose.reset(tok)
+

@@ -369,7 +369,7 @@ def provider_headers(provider: str, headers_in, body: dict) -> dict:
     if not provider.startswith("opencode"):
         return {}
     skey = affinity.session_key(headers_in.get("x-sg-session", ""), body)
-    return {"x-opencode-session": "sg-" + hashlib.sha1(skey.encode()).hexdigest()[:24], "User-Agent": f"SmartGateway/{config.VERSION}"}
+    return {"x-opencode-session": "sg-" + hashlib.sha256(skey.encode()).hexdigest()[:24], "User-Agent": f"SmartGateway/{config.VERSION}"}
 
 
 def analyze_request(route: str, body: dict, headers_in) -> dict:
