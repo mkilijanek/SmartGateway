@@ -64,6 +64,7 @@ class GatewayModel(SQLModel, table=True):
     cache_ttl: Optional[int] = None  # seconds; None = global default
     cache_any_temperature: bool = False  # False: only temperature == 0 (or X-SG-Cache: 1)
     cache_streaming: bool = False  # also cache/replay stream: true requests
+    cache_per_key: bool = False  # True: each gateway API key has its own cache entries (default: one cache shared by all keys of the gateway)
     cache_replay_speed: str = "instant"  # instant | realistic (replay at the originally measured speed)
     compress_mode: Optional[str] = None  # None = inherit global setting; off | shadow | on
     guardrails: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # None = all guardrails off (see guardrails/pipeline.py)

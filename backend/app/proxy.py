@@ -552,7 +552,8 @@ async def _route(gw, gm, key, route, body, form_files, headers_in, token, prompt
         analysis["cache_state"] = "miss" if plan == "use" else plan  # a hit overrides this below
     if plan == "use":
         gfp = guardrails.fingerprint(gcfg, grules)
-        ckey = cache.make_key(gw.id, route, {**body, "model": gm.public_name, **({"_sg_guardrails": gfp} if gfp else {})})
+        ckey = cache.make_key(gw.id, route, {**body, "model": gm.public_name, **({"_sg_guardrails": gfp} if gfp else {}),
+                                                  **({"_sg_key": key_id if key_id is not None else "none"} if getattr(gm, "cache_per_key", False) else {})})
         hit = await cache.cache.get(ckey)
         if hit is not None and is_stream and len(hit.get("choices") or []) != 1:
             hit = None  # cannot replay a multi-choice entry as a stream: serve live
