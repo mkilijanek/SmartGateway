@@ -6,6 +6,7 @@ import logging
 import os
 import secrets
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
@@ -30,9 +31,12 @@ from .router import health
 async def lifespan(app: FastAPI):
     init_db()
     log = logging.getLogger("smartgateway")
-    if config.GENERATED_ADMIN_PASSWORD:
+    if config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW:
         print(f"SmartGateway: SG_ADMIN_PASSWORD is not set, so a random admin password was generated (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'): "
-              f"{config.ADMIN_PASSWORD}  (stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD to choose your own)", flush=True)
+              f"{config.ADMIN_PASSWORD}  (shown only this once; also stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD or change it in Settings)", flush=True)
+    elif config.GENERATED_ADMIN_PASSWORD:
+        print(f"SmartGateway: using the generated admin password stored in {config.DATA_DIR}/admin_password (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'); "
+              "change it in Settings -> Admin password or set SG_ADMIN_PASSWORD", flush=True)
     elif not config.ADMIN_PASSWORD:
         log.warning("SG_ALLOW_OPEN_ADMIN is set: the web UI and management API are open to anyone who can reach this port")
     with session() as s:
@@ -65,7 +69,7 @@ _fails: dict[str, list] = {}
 
 def _sign(exp: int) -> str:
     # the password is part of the signed text, so changing SG_ADMIN_PASSWORD signs every existing session out
-    pw = hashlib.sha256(config.ADMIN_PASSWORD.encode()).hexdigest()
+    pw = hmac.new(crypto._load_secret(), b"pw:" + config.ADMIN_PASSWORD.encode(), hashlib.sha256).hexdigest()   # keyed, not a bare hash of the password
     return hmac.new(crypto._load_secret(), f"admin:{exp}:{pw}".encode(), hashlib.sha256).hexdigest()
 
 
@@ -98,20 +102,29 @@ def request_authed(headers, cookies) -> bool:
     return False
 
 
-_ip_hits: dict[str, list] = {}
+_ip_hits: dict[str, deque] = {}
+MAX_TRACKED_IPS = 5000
 IP_RPM = int(os.environ.get("SG_IP_RPM", "0") or 0)   # optional per-client-IP limit (requests/minute) on the public gateway URLs; 0 = off
 
 
 def _ip_limited(ip: str) -> bool:
-    """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits."""
+    """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits.
+    Only accepted requests are remembered, so a deque never holds more than IP_RPM entries and the table is capped at MAX_TRACKED_IPS addresses."""
     now = time.time()
-    if len(_ip_hits) > 5000:
-        for k in [k for k, v in _ip_hits.items() if not v or now - v[-1] > 60]:
-            _ip_hits.pop(k, None)
-    w = [t for t in _ip_hits.get(ip, []) if now - t < 60]
+    w = _ip_hits.get(ip)
+    if w is None:
+        if len(_ip_hits) >= MAX_TRACKED_IPS:
+            for k in [k for k, v in _ip_hits.items() if not v or now - v[-1] >= 60]:   # forget idle addresses first ...
+                _ip_hits.pop(k, None)
+            while len(_ip_hits) >= MAX_TRACKED_IPS:                                    # ... then the oldest ones, so the cap is hard
+                _ip_hits.pop(next(iter(_ip_hits)))
+        w = _ip_hits[ip] = deque()
+    while w and now - w[0] >= 60:
+        w.popleft()
+    if len(w) >= IP_RPM:
+        return True
     w.append(now)
-    _ip_hits[ip] = w
-    return len(w) > IP_RPM
+    return False
 
 
 def _locked(ip: str) -> bool:
@@ -177,10 +190,11 @@ async def guard(request: Request, call_next):
     # admin protection for the management API (UI shell stays public so the login page can load)
     if config.ADMIN_PASSWORD and p.startswith("/api/") and p not in ("/api/login", "/api/session", "/api/ws"):
         ip = request.client.host if request.client else "?"
-        if not request_authed(request.headers, request.cookies):
+        if request.headers.get("authorization") and not valid_session(request.cookies.get(COOKIE)) and _locked(ip):
+            # a locked-out client must not make us run the password hash at all (it is the expensive part)
+            return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
+        if not await asyncio.to_thread(request_authed, request.headers, request.cookies):   # scrypt must not block the event loop
             if request.headers.get("authorization"):   # a wrong password was presented: count it, like the login form does
-                if _locked(ip):
-                    return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
                 _fail(ip)
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     audited = None if is_gateway else audit.classify(request.method, p)
