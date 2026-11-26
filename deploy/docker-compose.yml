@@ -10,7 +10,7 @@ services:
   smartgateway:
     image: ${SG_IMAGE:-smartgateway:latest}
     ports:
-      - "${SG_PORT:-8080}:8080"
+      - "${SG_BIND:-0.0.0.0}:${SG_PORT:-8080}:8080"   # SG_BIND=127.0.0.1 publishes the port on this host only (put a TLS reverse proxy in front)
     environment:
       SG_ADMIN_PASSWORD: "${SG_ADMIN_PASSWORD:-}"   # set this: it enables the login for the UI + management API
       SG_ADMIN_USER: "${SG_ADMIN_USER:-admin}"
