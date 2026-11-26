@@ -18,6 +18,7 @@ from . import config, events, settings_store, unified
 from .voices import parse_voices as _parse_voices, voice_id as _voice_id
 from .compat import anthropic as anth
 from .compat import responses as resp_api
+from . import crypto
 from .crypto import hash_key
 from .db import session
 from . import guardrails
@@ -159,6 +160,9 @@ def load_members(gm_id: int) -> list[Candidate]:
                 continue
             ep = s.get(Endpoint, m.endpoint_id)
             if not ep:
+                continue
+            if crypto.is_unreadable(ep.api_key):   # never call an upstream without the credentials it needs
+                log.warning("endpoint %s skipped: its stored API key cannot be decrypted", ep.name)
                 continue
             health.status.setdefault(ep.id, ep.status)
             out.append(
@@ -365,7 +369,7 @@ def provider_headers(provider: str, headers_in, body: dict) -> dict:
     if not provider.startswith("opencode"):
         return {}
     skey = affinity.session_key(headers_in.get("x-sg-session", ""), body)
-    return {"x-opencode-session": "sg-" + hashlib.sha1(skey.encode()).hexdigest()[:24], "User-Agent": f"SmartGateway/{config.VERSION}"}
+    return {"x-opencode-session": "sg-" + hashlib.sha256(skey.encode()).hexdigest()[:24], "User-Agent": f"SmartGateway/{config.VERSION}"}
 
 
 def analyze_request(route: str, body: dict, headers_in) -> dict:
@@ -548,7 +552,8 @@ async def _route(gw, gm, key, route, body, form_files, headers_in, token, prompt
         analysis["cache_state"] = "miss" if plan == "use" else plan  # a hit overrides this below
     if plan == "use":
         gfp = guardrails.fingerprint(gcfg, grules)
-        ckey = cache.make_key(gw.id, route, {**body, "model": gm.public_name, **({"_sg_guardrails": gfp} if gfp else {})})
+        ckey = cache.make_key(gw.id, route, {**body, "model": gm.public_name, **({"_sg_guardrails": gfp} if gfp else {}),
+                                                  **({"_sg_key": key_id if key_id is not None else "none"} if getattr(gm, "cache_per_key", False) else {})})
         hit = await cache.cache.get(ckey)
         if hit is not None and is_stream and len(hit.get("choices") or []) != 1:
             hit = None  # cannot replay a multi-choice entry as a stream: serve live

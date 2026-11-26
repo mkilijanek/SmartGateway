@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import config
+from . import config, crypto
 
 PNG_1x1 = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -98,6 +98,8 @@ def root_url(base: str) -> str:
 
 def headers_for(api_key: Optional[str]) -> dict:
     h = {"Content-Type": "application/json"}
+    if crypto.is_unreadable(api_key):
+        raise crypto.SecretUnreadable("The stored API key cannot be decrypted; enter it again")
     if api_key:
         h["Authorization"] = f"Bearer {api_key}"
     return h

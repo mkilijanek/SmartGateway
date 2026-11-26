@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
     "compress_config": {},           # overrides of ContentRouterConfig (partial dict)
     "context_insights_enabled": True,
     "password_hash_log_n": 14,       # scrypt cost of a password chosen in the UI: 14 (default, 16 MB) .. 16 (64 MB); raised hashes are upgraded at the next login
+    "ip_rpm": None,                  # requests/minute per client IP on the public gateway URLs; None = SG_IP_RPM (default 0 = off), 0 = off
     "log_retention_days": 0,         # 0 = keep forever
     "compression_retention_days": 0,
     "stress_retention_days": 0,

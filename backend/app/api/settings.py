@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from typing import Optional
@@ -31,6 +32,7 @@ class SettingsIn(BaseModel):
     council_retention_days: Optional[int] = None
     mcp_retention_days: Optional[int] = None
     password_hash_log_n: Optional[int] = None          # 14..16: scrypt cost for the UI-chosen admin password
+    ip_rpm: Optional[int] = None                       # requests/minute per client IP on public gateway URLs; 0 = off, -1 = back to SG_IP_RPM
 
 
 class TestIn(BaseModel):
@@ -52,6 +54,7 @@ def view() -> dict:
         "cache_fallback_memory": s["cache_fallback_memory"],
         **{k: s[k] for k in RETENTION_KEYS},
         "password_hash_log_n": s["password_hash_log_n"], "password_source": config.PASSWORD_SOURCE,
+        "ip_rpm": s["ip_rpm"], "ip_rpm_env": int(os.environ.get("SG_IP_RPM", "0") or 0),
     }
 
 
@@ -91,6 +94,11 @@ async def put_settings(body: SettingsIn):
             raise HTTPException(400, "Retention must be between 0 (keep forever) and 3650 days")
     if "password_hash_log_n" in vals and not (config.MIN_LOG_N <= vals["password_hash_log_n"] <= config.MAX_LOG_N):
         raise HTTPException(400, f"The password hash cost must be between {config.MIN_LOG_N} and {config.MAX_LOG_N}")
+    if "ip_rpm" in vals:
+        if not (-1 <= vals["ip_rpm"] <= 1_000_000):
+            raise HTTPException(400, "The per-IP limit must be 0 (off) or a number of requests per minute; -1 returns to SG_IP_RPM")
+        if vals["ip_rpm"] == -1:
+            vals["ip_rpm"] = None
     merged = {**st.get_all(), **vals}
     if merged["redis_enabled"] and not merged["redis_url"]:
         raise HTTPException(400, "Enter a Redis URL before enabling Redis")
