@@ -241,7 +241,7 @@ The admin UI and API always require a password (see Configuration), but the gate
 - **Give every public gateway, unified endpoint and MCP gateway an API key.** A gateway without keys is open to anyone who can reach the URL and spends your upstream capacity. Set `SG_IP_RPM` (requests per minute per client IP, 0 = off) as a second line of defence.
 - **Set your own long `SG_ADMIN_PASSWORD`** (or change the generated one in Settings → Security). Failed logins are rate-limited per IP.
 - Consider not publishing the admin UI at all: route only `/gw/`, `/v1/`, `/unified/` and `/mcp/` through the public proxy and keep `/` and `/api/` on a private network or VPN.
-- Request bodies are capped (`SG_MAX_BODY_MB`, default 100 for gateway calls; `SG_MAX_ADMIN_BODY_MB`, default 20). Public error messages are generic; full upstream errors and routing headers are only shown to the signed-in admin (`SG_VERBOSE_ERRORS=1` shows them to everyone, for private networks).
+- Request bodies are capped (`SG_MAX_BODY_MB`, default 100 for gateway calls; `SG_MAX_ADMIN_BODY_MB`, default 20), and all request bodies in flight together are bounded too (`SG_MAX_INFLIGHT_BODY_MB`, default 512; beyond it requests get 503 + Retry-After). Public error messages are generic; full upstream errors and routing headers are only shown to the signed-in admin (`SG_VERBOSE_ERRORS=1` shows them to everyone, for private networks).
 - Upstream response headers such as cookies, CORS and server banners are never passed on to clients. The container runs as a non-root user and its dependencies are pinned to patched releases (`backend/requirements.txt`); rebuild regularly.
 - Content filter regexes are written by the admin and run on client text: avoid patterns with nested quantifiers.
 
