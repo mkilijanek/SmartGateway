@@ -6,3 +6,4 @@ python-multipart==0.0.34
 cryptography==50.0.2
 redis==8.1.0
 jsonschema==4.26.0
+regex==2026.11.25
