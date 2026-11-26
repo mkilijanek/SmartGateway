@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 from app import db, retention
 from app.main import app
-from app.mcp import client as mcp_client, registry
+from app.mcp import client as mcp_client, registry, server as mcp_server
 from app.mcp.client import McpError, McpSession
 from app.models import McpCallLog
 
@@ -316,3 +316,69 @@ def test_dashboard_mcp_stats(client, servers):
     assert any(g["id"] == gw["id"] and g["calls"] == 4 for g in d["gateways"])
     assert sum(b["calls"] for b in d["timeline"]) == d["totals"]["calls"]
 
+
+# ------------------------------------------------------------------ SG-013 / SG-014: batch limits and JSON-RPC validation
+def post_raw(client, path, body):
+    return client.post(path, json=body)
+
+
+def test_batch_is_bounded_and_one_bad_message_does_not_sink_it(client, servers):
+    a = add_ep(client, "alpha.test")
+    gw = make_gateway(client, [("a", a)], {"a": ["tool:search"]})
+    path = f"/mcp/{gw['slug']}"
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    assert post_raw(client, path, []).status_code == 400                                       # empty batch = invalid request
+    too_many = post_raw(client, path, [{**ping, "id": i} for i in range(mcp_server.MAX_BATCH + 1)])
+    assert too_many.status_code == 400 and too_many.json()["error"]["code"] == -32600
+    mixed = post_raw(client, path, [ping, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": [1, 2]}, "junk", {**ping, "id": 4}]).json()
+    by_id = {r["id"]: r for r in mixed}
+    assert by_id[1]["result"] == {} and by_id[4]["result"] == {}
+    assert by_id[2]["error"]["code"] == -32602                                                  # params is not an object
+    assert any(r["error"]["code"] == -32600 for r in mixed if r["id"] is None)                  # the string is not a request
+
+
+@pytest.mark.parametrize("msg,code", [
+    ({"jsonrpc": "2.0", "id": 1, "method": 5}, -32600),
+    ({"jsonrpc": "2.0", "id": [1], "method": "ping"}, -32600),
+    ({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": "x"}, -32602),
+    ({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "a", "arguments": "x"}}, -32602),
+    ({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": []}, -32602),
+])
+def test_malformed_jsonrpc_gets_an_error_not_a_500(client, servers, msg, code):
+    a = add_ep(client, "alpha.test")
+    gw = make_gateway(client, [("a", a)], {"a": ["tool:search"]})
+    r = post_raw(client, f"/mcp/{gw['slug']}", msg)
+    assert r.status_code == 200 and r.json()["error"]["code"] == code
+
+
+def test_batch_concurrency_is_capped(client, servers, monkeypatch):
+    import asyncio
+    state = {"now": 0, "peak": 0}
+
+    async def slow(gw, key, msg):
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+        await asyncio.sleep(0.02)
+        state["now"] -= 1
+        return {"jsonrpc": "2.0", "id": msg["id"], "result": {}}
+
+    monkeypatch.setattr(mcp_server, "handle", slow)
+    monkeypatch.setattr(mcp_server, "BATCH_CONCURRENCY", 3)
+    a = add_ep(client, "alpha.test")
+    gw = make_gateway(client, [("a", a)], {"a": ["tool:search"]})
+    r = post_raw(client, f"/mcp/{gw['slug']}", [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(mcp_server.MAX_BATCH)])
+    assert r.status_code == 200 and len(r.json()) == mcp_server.MAX_BATCH and state["peak"] == 3
+
+
+def test_unexpected_handler_error_is_contained(client, servers, monkeypatch):
+    async def boom(gw, key, msg):
+        if msg["id"] == 2:
+            raise RuntimeError("kaboom with /internal/path")
+        return {"jsonrpc": "2.0", "id": msg["id"], "result": {}}
+
+    monkeypatch.setattr(mcp_server, "handle", boom)
+    a = add_ep(client, "alpha.test")
+    gw = make_gateway(client, [("a", a)], {"a": ["tool:search"]})
+    out = {r["id"]: r for r in post_raw(client, f"/mcp/{gw['slug']}", [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in (1, 2, 3)]).json()}
+    assert out[1]["result"] == {} and out[3]["result"] == {}
+    assert out[2]["error"]["code"] == -32603 and "kaboom" not in json.dumps(out[2])
