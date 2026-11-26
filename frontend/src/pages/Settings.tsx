@@ -4,6 +4,7 @@ import { api } from "../api";
 import { fmt, PageHeader, Stat } from "../components/ui";
 import CompressionSettings from "../components/CompressionSettings";
 import Retention from "../components/Retention";
+import PasswordHashCost from "../components/PasswordHashCost";
 import IpLimit from "../components/IpLimit";
 import AdminPassword from "../components/AdminPassword";
 import { Link } from "react-router-dom";
@@ -135,6 +136,7 @@ export default function Settings() {
       {tab === "data" && <Retention />}
       {tab === "security" && <>
         <AdminPassword />
+        <PasswordHashCost />
         <IpLimit />
         <p className="mt-4 text-sm text-[#8e8e9a]">Who changed what in the admin interface: <Link to="/logs?tab=audit" className="text-[#a79cff] hover:underline">view the audit log →</Link></p>
       </>}
