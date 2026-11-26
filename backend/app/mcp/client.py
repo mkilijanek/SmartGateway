@@ -5,12 +5,16 @@ prompt, ping. Server-initiated requests (sampling, roots, elicitation) are not s
 import asyncio
 import itertools
 import json
+import os
 from typing import Any, Optional
 from urllib.parse import urljoin
 
 import httpx
 
 PROTOCOL = "2025-06-18"
+MAX_RESPONSE_BYTES = int(float(os.environ.get("SG_MCP_MAX_RESPONSE_MB", "16")) * 1024 * 1024)   # one response body, or one SSE event (after decompression)
+CALL_TIMEOUT = float(os.environ.get("SG_MCP_CALL_TIMEOUT_SECONDS", "120"))                         # total time for one RPC (not per read)
+SSE_IDLE_TIMEOUT = float(os.environ.get("SG_MCP_SSE_IDLE_SECONDS", "600"))                      # the long-lived legacy SSE stream is dropped after this much silence
 CLIENT_INFO = {"name": "smartgateway", "version": "1.0"}
 
 _http: Optional[httpx.AsyncClient] = None
@@ -39,22 +43,66 @@ def _err(obj: dict) -> McpError:
     return McpError(str(e.get("message") or "MCP error"), int(e.get("code") or -32000), e.get("data"))
 
 
-async def _events(resp: httpx.Response):
-    """Yield (event, data) pairs of a text/event-stream body."""
-    event, data = "message", []
-    async for line in resp.aiter_lines():
+def _too_big() -> McpError:
+    return McpError(f"The MCP server sent more than {MAX_RESPONSE_BYTES // (1024 * 1024)} MB in one response; aborted", -32000)
+
+
+async def _read_limited(resp: httpx.Response, limit: Optional[int] = None) -> bytes:
+    """Read a body but give up as soon as it exceeds the limit (counted after decompression)."""
+    limit = MAX_RESPONSE_BYTES if limit is None else limit
+    out = bytearray()
+    async for chunk in resp.aiter_bytes():
+        out += chunk
+        if len(out) > limit:
+            raise _too_big()
+    return bytes(out)
+
+
+async def _read_head(resp: httpx.Response, n: int = 4096) -> bytes:
+    """The first n bytes of a body (an error page); never raises for a long one."""
+    out = bytearray()
+    async for chunk in resp.aiter_bytes():
+        out += chunk
+        if len(out) >= n:
+            break
+    return bytes(out[:n])
+
+
+async def _events(resp: httpx.Response, total_limit: Optional[int] = None):
+    """Yield (event, data) pairs of a text/event-stream body. One event is capped at MAX_RESPONSE_BYTES; a finite stream can also be capped as a whole."""
+    st = {"event": "message", "data": [], "size": 0}
+
+    def feed(line: str):
         if line == "":
-            if data:
-                yield event, "\n".join(data)
-            event, data = "message", []
-        elif line.startswith(":"):
-            continue
-        elif line.startswith("event:"):
-            event = line[6:].strip()
+            out = (st["event"], "\n".join(st["data"])) if st["data"] else None
+            st.update(event="message", data=[], size=0)
+            return out
+        if line.startswith(":"):
+            return None
+        st["size"] += len(line)
+        if st["size"] > MAX_RESPONSE_BYTES:
+            raise _too_big()
+        if line.startswith("event:"):
+            st["event"] = line[6:].strip()
         elif line.startswith("data:"):
-            data.append(line[5:][1:] if line[5:6] == " " else line[5:])
-    if data:
-        yield event, "\n".join(data)
+            st["data"].append(line[5:][1:] if line[5:6] == " " else line[5:])
+        return None
+
+    buf, total = b"", 0
+    async for chunk in resp.aiter_bytes():
+        total += len(chunk)
+        if total_limit is not None and total > total_limit:
+            raise _too_big()
+        *lines, buf = (buf + chunk).split(b"\n")   # one pass per chunk, not one copy per line
+        for raw in lines:
+            if (ev := feed(raw.rstrip(b"\r").decode(errors="replace"))):
+                yield ev
+        if len(buf) > MAX_RESPONSE_BYTES:   # a line without a newline
+            raise _too_big()
+    if buf and (ev := feed(buf.rstrip(b"\r").decode(errors="replace"))):
+        yield ev
+    if st["data"]:
+        yield st["event"], "\n".join(st["data"])
 
 
 def _match(payload: Any, want: int) -> Optional[dict]:
@@ -95,14 +143,14 @@ class McpSession:
             if r.status_code == 404 and self.session_id:
                 raise SessionExpired("MCP session expired", -32001)
             if r.status_code >= 400:
-                body = (await r.aread()).decode(errors="replace")[:300]
+                body = (await _read_head(r)).decode(errors="replace")[:300]
                 raise McpError(f"HTTP {r.status_code}: {body}".strip(), -32000, {"status": r.status_code})
             if sid := r.headers.get("mcp-session-id"):
                 self.session_id = sid
             if want is None:
                 return None
             if "text/event-stream" in r.headers.get("content-type", ""):
-                async for _ev, data in _events(r):
+                async for _ev, data in _events(r, MAX_RESPONSE_BYTES):
                     try:
                         hit = _match(json.loads(data), want)
                     except ValueError:
@@ -111,7 +159,7 @@ class McpSession:
                         return hit
                 raise McpError("The MCP server closed the stream without answering")
             try:
-                hit = _match(json.loads(await r.aread()), want)
+                hit = _match(json.loads(await _read_limited(r)), want)
             except ValueError:
                 raise McpError("The MCP server sent a response that is not JSON")
             if hit is None:
@@ -123,7 +171,8 @@ class McpSession:
 
         async def read():
             try:
-                async with get_http().stream("GET", self.url, headers={**self.headers, "Accept": "text/event-stream"}, timeout=None) as r:
+                async with get_http().stream("GET", self.url, headers={**self.headers, "Accept": "text/event-stream"},
+                                              timeout=httpx.Timeout(None, connect=10, read=SSE_IDLE_TIMEOUT)) as r:
                     if r.status_code >= 400:
                         raise McpError(f"HTTP {r.status_code} opening the SSE stream", -32000, {"status": r.status_code})
                     async for ev, data in _events(r):
@@ -158,20 +207,27 @@ class McpSession:
         if want is not None:
             fut = asyncio.get_running_loop().create_future()
             self._pending[want] = fut
-        r = await get_http().post(self._post_url, json=payload, headers={**self.headers, "Content-Type": "application/json"}, timeout=30)
-        if r.status_code >= 400:
-            self._pending.pop(want, None)
-            raise McpError(f"HTTP {r.status_code}: {r.text[:300]}", -32000, {"status": r.status_code})
+        async with get_http().stream("POST", self._post_url, json=payload, headers={**self.headers, "Content-Type": "application/json"}, timeout=30) as r:
+            if r.status_code >= 400:
+                self._pending.pop(want, None)
+                body = (await _read_head(r)).decode(errors="replace")[:300]
+                raise McpError(f"HTTP {r.status_code}: {body}", -32000, {"status": r.status_code})
         if fut is None:
             return None
         try:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
-            self._pending.pop(want, None)
-            raise McpError("Timed out waiting for the MCP server")
+            raise McpError("Timed out waiting for the MCP server") from None
+        finally:
+            self._pending.pop(want, None)   # also when the outer deadline cancels us
 
     async def _send(self, payload: dict, want: Optional[int], timeout: float) -> Optional[dict]:
-        return await (self._post_sse if self.mode == "sse" else self._post_streamable)(payload, want, timeout)
+        # one deadline for the whole exchange: httpx timeouts are per read, so a server that trickles bytes could otherwise hold the request forever
+        try:
+            async with asyncio.timeout(timeout):
+                return await (self._post_sse if self.mode == "sse" else self._post_streamable)(payload, want, timeout)
+        except TimeoutError:
+            raise McpError("Timed out waiting for the MCP server", -32000, {"status": 0}) from None   # status 0 = could not be reached, as httpx timeouts were reported before
 
     # ------------------------------------------------------------ lifecycle
     async def _initialize(self):
@@ -216,7 +272,8 @@ class McpSession:
                 if not self._ready:
                     await self._initialize()
 
-    async def request(self, method: str, params: Optional[dict] = None, timeout: float = 120) -> Any:
+    async def request(self, method: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> Any:
+        timeout = CALL_TIMEOUT if timeout is None else timeout
         for attempt in (0, 1):
             await self.ensure()
             i = next(self._ids)
