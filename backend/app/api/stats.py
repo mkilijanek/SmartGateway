@@ -13,6 +13,8 @@ from ..router import health
 from ..router.scheduler import scheduler
 
 router = APIRouter(prefix="/api")
+RECHECK_EVERY = 30   # seconds between re-validating the session of an open websocket
+MAX_MINUTES = 7 * 1440
 
 
 def live_snapshot(s: Session) -> dict:
@@ -41,6 +43,7 @@ def _pct(vals: list, p: float):
 
 @router.get("/stats")
 def stats(minutes: int = 60, gateway_id: int | None = None, gateway_ids: str | None = None, s: Session = Depends(get_session)):
+    minutes = max(1, min(minutes, MAX_MINUTES))   # 0 divided by zero below; unbounded values loaded the whole request log
     since = time.time() - minutes * 60
     q = select(RequestLog).where(RequestLog.ts >= since)
     if gateway_id:
@@ -102,8 +105,11 @@ def logs(limit: int = Query(100, le=1000), gateway_id: int | None = None, only_e
 
 @router.websocket("/ws")
 async def ws(sock: WebSocket):
-    from ..main import request_authed
-    if not request_authed(sock.headers, sock.cookies):
+    from ..main import origin_ok, request_authed
+    if not origin_ok(sock.headers):
+        await sock.close(code=4403)
+        return
+    if not await asyncio.to_thread(request_authed, sock.headers, sock.cookies):
         await sock.close(code=4401)
         return
     await sock.accept()
@@ -114,8 +120,17 @@ async def ws(sock: WebSocket):
             await sock.send_text(json.dumps({"type": "snapshot", **live_snapshot(s)}))
 
         async def ticker():
+            n = 0
             while True:
                 await asyncio.sleep(1.0)
+                n += 1
+                if n % RECHECK_EVERY == 0 and not await asyncio.to_thread(request_authed, sock.headers, sock.cookies):
+                    try:
+                        q.put_nowait(None)   # logged out / session revoked / password changed: wake the loop below so it closes the socket
+                    except asyncio.QueueFull:   # a slow client has a backlog: drop its oldest event to make room for the signal
+                        q.get_nowait()
+                        q.put_nowait(None)
+                    return
                 with session() as s2:
                     await sock.send_text(json.dumps({"type": "snapshot", **live_snapshot(s2)}))
 
@@ -123,6 +138,9 @@ async def ws(sock: WebSocket):
         try:
             while True:
                 ev = await q.get()
+                if ev is None:
+                    await sock.close(code=4401)
+                    break
                 await sock.send_text(json.dumps(ev, default=str))
         finally:
             t.cancel()
