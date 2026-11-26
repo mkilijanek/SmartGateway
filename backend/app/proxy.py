@@ -18,6 +18,7 @@ from . import config, events, settings_store, unified
 from .voices import parse_voices as _parse_voices, voice_id as _voice_id
 from .compat import anthropic as anth
 from .compat import responses as resp_api
+from . import crypto
 from .crypto import hash_key
 from .db import session
 from . import guardrails
@@ -159,6 +160,9 @@ def load_members(gm_id: int) -> list[Candidate]:
                 continue
             ep = s.get(Endpoint, m.endpoint_id)
             if not ep:
+                continue
+            if crypto.is_unreadable(ep.api_key):   # never call an upstream without the credentials it needs
+                log.warning("endpoint %s skipped: its stored API key cannot be decrypted", ep.name)
                 continue
             health.status.setdefault(ep.id, ep.status)
             out.append(
