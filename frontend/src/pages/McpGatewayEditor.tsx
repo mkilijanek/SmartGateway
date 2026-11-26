@@ -11,7 +11,7 @@ const exposed = (prefix: string, kind: string, name: string) => (kind === "resou
 export default function McpGatewayEditor() {
   const { id } = useParams();
   const nav = useNavigate();
-  const [f, setF] = useState<any>({ name: "", slug: "", description: "", members: [] as any[] });
+  const [f, setF] = useState<any>({ name: "", slug: "", description: "", session_scope: "shared", members: [] as any[] });
   const [eps, setEps] = useState<any[]>([]);
   const [items, setItems] = useState<Record<number, any[]>>({});
   const [q, setQ] = useState<Record<number, string>>({});
@@ -34,7 +34,7 @@ export default function McpGatewayEditor() {
   const toggle = (i: number, key: string, on: boolean) => { const cur: string[] = f.members[i].enabled_items; setM(i, { enabled_items: on ? [...new Set([...cur, key])] : cur.filter((x) => x !== key) }); };
   const save = async () => {
     setErr("");
-    const body = { name: f.name, slug: f.slug || null, description: f.description || null, members: f.members.map((m: any) => ({ endpoint_id: m.endpoint_id, prefix: m.prefix, enabled: m.enabled, enabled_items: m.enabled_items })) };
+    const body = { name: f.name, slug: f.slug || null, description: f.description || null, session_scope: f.session_scope || "shared", members: f.members.map((m: any) => ({ endpoint_id: m.endpoint_id, prefix: m.prefix, enabled: m.enabled, enabled_items: m.enabled_items })) };
     try {
       const r = id ? await api(`/api/mcp-gateways/${id}`, { method: "PUT", json: body }) : await api("/api/mcp-gateways", { method: "POST", json: body });
       nav(id ? "/mcp-gateways" : `/mcp-gateways/${r.id}/edit`);
@@ -51,6 +51,8 @@ export default function McpGatewayEditor() {
         <div><label className="lbl">Gateway name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="Dev tools" /></div>
         <div><label className="lbl">URL slug</label><input className="input mono" value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} placeholder="auto from name → /mcp/<slug>" /></div>
         <div className="md:col-span-2"><label className="lbl">Instructions for clients (optional)</label><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Sent to MCP clients as server instructions" /></div>
+        <label className="flex cursor-pointer items-start gap-3 text-sm md:col-span-2"><input type="checkbox" className="mt-1" checked={f.session_scope === "key"} onChange={(e) => setF({ ...f, session_scope: e.target.checked ? "key" : "shared" })} />
+          <span>Separate upstream session per API key<span className="block text-xs text-[#787884]">Off: all clients share one session per upstream MCP server. On: each gateway key gets its own, so a stateful server never mixes the context of different clients.</span></span></label>
       </div>
       <div className="space-y-4">{f.members.map((m: any, i: number) => {
         const list = items[m.endpoint_id] || [];

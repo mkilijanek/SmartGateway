@@ -7,7 +7,7 @@ import KeysPanel from "../components/KeysPanel";
 import GuardrailsEditor from "../components/GuardrailsEditor";
 import VoicePicker, { voiceName } from "../components/VoicePicker";
 
-const blankModel = () => ({ public_name: "", enabled: true, aliases_text: "", voices_text: "", strategy: "", sticky: false, system_prompt: "", max_tokens_cap: "", default_params: "", cache_enabled: false, cache_ttl: "", cache_any_temperature: false, cache_streaming: true, cache_replay_speed: "instant", compress_mode: "", guardrails: null as any, members: [] as any[] });
+const blankModel = () => ({ public_name: "", enabled: true, aliases_text: "", voices_text: "", strategy: "", sticky: false, system_prompt: "", max_tokens_cap: "", default_params: "", cache_enabled: false, cache_ttl: "", cache_any_temperature: false, cache_streaming: true, cache_per_key: false, cache_replay_speed: "instant", compress_mode: "", guardrails: null as any, members: [] as any[] });
 
 export default function GatewayEditor() {
   const { id } = useParams();
@@ -47,7 +47,7 @@ export default function GatewayEditor() {
       models = f.models.map((m: any) => ({
         public_name: m.public_name, enabled: m.enabled !== false, aliases: String(m.aliases_text || "").split(/[,\n]/).map((x: string) => x.trim()).filter(Boolean), voices: String(m.voices_text || "").split(/[,\n]/).map((x: string) => x.trim()).filter(Boolean), strategy: m.strategy || null, sticky: !!m.sticky, system_prompt: m.system_prompt || null,
         max_tokens_cap: m.max_tokens_cap ? +m.max_tokens_cap : null,
-        cache_enabled: !!m.cache_enabled, cache_streaming: !!m.cache_streaming, cache_replay_speed: m.cache_replay_speed || "instant", compress_mode: m.compress_mode || null, guardrails: m.guardrails || null, cache_ttl: m.cache_ttl ? +m.cache_ttl : null, cache_any_temperature: !!m.cache_any_temperature,
+        cache_enabled: !!m.cache_enabled, cache_streaming: !!m.cache_streaming, cache_per_key: !!m.cache_per_key, cache_replay_speed: m.cache_replay_speed || "instant", compress_mode: m.compress_mode || null, guardrails: m.guardrails || null, cache_ttl: m.cache_ttl ? +m.cache_ttl : null, cache_any_temperature: !!m.cache_any_temperature,
         default_params: m.default_params?.trim() ? JSON.parse(m.default_params) : {},
         members: m.members.map((x: any) => ({ model_id: x.model_id, weight: +x.weight || 1, priority: +x.priority || 0, slots_override: x.slots_override ? +x.slots_override : null,
           enabled: x.enabled ?? true, is_fallback: !!x.is_fallback, tier: +x.tier || 2 })),
@@ -140,6 +140,8 @@ export default function GatewayEditor() {
                       <span>Also cache non-deterministic requests<span className="block text-xs text-[#787884]">Off: only requests with temperature 0 (or header X-SG-Cache: 1). X-SG-Cache: 0 bypasses.</span></span></label>
                     <label className="flex cursor-pointer items-start gap-3 text-sm"><input type="checkbox" className="mt-1" checked={!!m.cache_streaming} onChange={(e) => setModel(i, { cache_streaming: e.target.checked })} />
                       <span>Also cache streaming requests<span className="block text-xs text-[#787884]">A stream is stored once it completes and later replayed to streaming <i>and</i> non-streaming clients. Interrupted streams are never stored.</span></span></label>
+                    <label className="flex cursor-pointer items-start gap-3 text-sm"><input type="checkbox" className="mt-1" checked={!!m.cache_per_key} onChange={(e) => setModel(i, { cache_per_key: e.target.checked })} />
+                      <span>Separate cache per API key<span className="block text-xs text-[#787884]">Off: all keys of this gateway share cached answers to identical requests. On: each key only sees answers cached for itself (fewer hits).</span></span></label>
                     {m.cache_streaming && <div><label className="lbl">Replay speed for streaming hits</label>
                       <select className="input" value={m.cache_replay_speed || "instant"} onChange={(e) => setModel(i, { cache_replay_speed: e.target.value })}>
                         <option value="instant">Instant (fastest)</option><option value="realistic">Realistic (same duration as the original answer)</option></select></div>}

@@ -6,7 +6,9 @@ import logging
 import os
 import secrets
 import time
+from collections import deque
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -21,7 +23,7 @@ from .bodylimit import BodyLimit
 from .api import compression as compression_api, mcp_endpoints as mcp_endpoints_api, mcp_gateways as mcp_gateways_api, content_filters as content_filters_api, endpoints, gateways, insights as insights_api, maintenance as maintenance_api, settings as settings_api, stats, stress as stress_api, unified as unified_api
 from .db import engine, init_db, session
 from .mcp import registry as mcp_registry, server as mcp_server
-from .models import Endpoint, McpEndpoint
+from .models import AdminSession, Endpoint, McpEndpoint
 from .router import health
 
 
@@ -29,9 +31,12 @@ from .router import health
 async def lifespan(app: FastAPI):
     init_db()
     log = logging.getLogger("smartgateway")
-    if config.GENERATED_ADMIN_PASSWORD:
+    if config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW:
         print(f"SmartGateway: SG_ADMIN_PASSWORD is not set, so a random admin password was generated (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'): "
-              f"{config.ADMIN_PASSWORD}  (stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD to choose your own)", flush=True)
+              f"{config.ADMIN_PASSWORD}  (shown only this once; also stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD or change it in Settings)", flush=True)
+    elif config.GENERATED_ADMIN_PASSWORD:
+        print(f"SmartGateway: using the generated admin password stored in {config.DATA_DIR}/admin_password (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'); "
+              "change it in Settings -> Admin password or set SG_ADMIN_PASSWORD", flush=True)
     elif not config.ADMIN_PASSWORD:
         log.warning("SG_ALLOW_OPEN_ADMIN is set: the web UI and management API are open to anyone who can reach this port")
     with session() as s:
@@ -62,22 +67,65 @@ SESSION_TTL = 7 * 86400
 _fails: dict[str, list] = {}
 
 
-def _sign(exp: int) -> str:
+def _sign(exp: int, sid: str) -> str:
     # the password is part of the signed text, so changing SG_ADMIN_PASSWORD signs every existing session out
-    pw = hashlib.sha256(config.ADMIN_PASSWORD.encode()).hexdigest()
-    return hmac.new(crypto._load_secret(), f"admin:{exp}:{pw}".encode(), hashlib.sha256).hexdigest()
+    pw = hmac.new(crypto._load_secret(), b"pw:" + config.ADMIN_PASSWORD.encode(), hashlib.sha256).hexdigest()   # keyed, not a bare hash of the password
+    return hmac.new(crypto._load_secret(), f"admin:{exp}:{sid}:{pw}".encode(), hashlib.sha256).hexdigest()
 
 
 def make_session() -> str:
-    exp = int(time.time()) + SESSION_TTL
-    return f"{exp}.{_sign(exp)}"
+    """Cookie value `exp.sid.sig`; the random sid is registered server-side so this one session can be revoked."""
+    now = int(time.time())
+    exp, sid = now + SESSION_TTL, secrets.token_urlsafe(16)
+    with session() as s:
+        for old in s.exec(select(AdminSession).where(AdminSession.exp < now)).all():   # forget expired sessions
+            s.delete(old)
+        s.add(AdminSession(sid=sid, exp=exp))
+        s.commit()
+    return f"{exp}.{sid}.{_sign(exp, sid)}"
+
+
+def _parse(token: str | None):
+    exp, sid, sig = (token or "").split(".", 2)
+    return int(exp), sid, sig
 
 
 def valid_session(token: str | None) -> bool:
     try:
-        exp, sig = (token or "").split(".", 1)
-        return int(exp) > time.time() and hmac.compare_digest(sig, _sign(int(exp)))
+        exp, sid, sig = _parse(token)
+        if not (exp > time.time() and hmac.compare_digest(sig, _sign(exp, sid))):
+            return False
+        with session() as s:
+            return s.get(AdminSession, sid) is not None
     except Exception:  # noqa: BLE001
+        return False
+
+
+def admin_user() -> str:
+    return os.environ.get("SG_ADMIN_USER", "admin")
+
+
+def _user_ok(candidate: str) -> bool:
+    return secrets.compare_digest(candidate.encode(), admin_user().encode())
+
+
+def revoke_session(token: str | None = None, everyone: bool = False) -> bool:
+    """True when the session(s) are gone (or never existed); False if the registry could not be updated."""
+    try:
+        with session() as s:
+            if everyone:
+                rows = s.exec(select(AdminSession)).all()
+            else:
+                row = s.get(AdminSession, _parse(token)[1]) if token else None
+                rows = [row] if row else []
+            for r in rows:
+                s.delete(r)
+            s.commit()
+        return True
+    except ValueError:   # a malformed token has no session behind it
+        return True
+    except Exception:  # noqa: BLE001
+        logging.getLogger("smartgateway").warning("could not revoke the admin session", exc_info=True)
         return False
 
 
@@ -91,13 +139,15 @@ def request_authed(headers, cookies) -> bool:
         if h.lower().startswith("bearer "):
             return config.verify_password(h[7:])
         if h.lower().startswith("basic "):
-            return config.verify_password(base64.b64decode(h[6:]).decode().split(":", 1)[1])
+            user, _, pw = base64.b64decode(h[6:]).decode().partition(":")   # the user name counts, as it does on the login form
+            return _user_ok(user) and config.verify_password(pw)
     except Exception:  # noqa: BLE001
         return False
     return False
 
 
-_ip_hits: dict[str, list] = {}
+_ip_hits: dict[str, deque] = {}
+MAX_TRACKED_IPS = 5000
 IP_RPM = int(os.environ.get("SG_IP_RPM", "0") or 0)   # optional per-client-IP limit (requests/minute) on the public gateway URLs; 0 = off
 
 
@@ -111,15 +161,23 @@ def ip_rpm() -> int:
 
 
 def _ip_limited(ip: str) -> bool:
-    """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits."""
+    """Sliding one-minute window per client IP. Protects open gateways (no API key) from being hammered; keyed gateways have their own limits.
+    Only accepted requests are remembered, so a deque never holds more than IP_RPM entries and the table is capped at MAX_TRACKED_IPS addresses."""
     now = time.time()
-    if len(_ip_hits) > 5000:
-        for k in [k for k, v in _ip_hits.items() if not v or now - v[-1] > 60]:
-            _ip_hits.pop(k, None)
-    w = [t for t in _ip_hits.get(ip, []) if now - t < 60]
+    w = _ip_hits.get(ip)
+    if w is None:
+        if len(_ip_hits) >= MAX_TRACKED_IPS:
+            for k in [k for k, v in _ip_hits.items() if not v or now - v[-1] >= 60]:   # forget idle addresses first ...
+                _ip_hits.pop(k, None)
+            while len(_ip_hits) >= MAX_TRACKED_IPS:                                    # ... then the oldest ones, so the cap is hard
+                _ip_hits.pop(next(iter(_ip_hits)))
+        w = _ip_hits[ip] = deque()
+    while w and now - w[0] >= 60:
+        w.popleft()
+    if len(w) >= ip_rpm():
+        return True
     w.append(now)
-    _ip_hits[ip] = w
-    return len(w) > ip_rpm()
+    return False
 
 
 def _locked(ip: str) -> bool:
@@ -142,6 +200,25 @@ def _fail(ip: str) -> None:
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; "
        "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+ALLOWED_ORIGINS = [o.strip().rstrip("/").lower() for o in os.environ.get("SG_ALLOWED_ORIGINS", "").split(",") if o.strip()]   # extra origins allowed to call the admin API (rarely needed)
+
+
+def origin_ok(headers) -> bool:
+    """Browsers always send Origin on cross-origin and on state-changing requests. If it is present it must be this site (same host:port as the
+    Host / X-Forwarded-Host the client used, whatever the scheme, since TLS is often terminated by a proxy) or an explicitly allowed origin.
+    No Origin = not a browser form/fetch (curl, scripts), which cookie-based CSRF cannot use."""
+    origin = (headers.get("origin") or "").strip()
+    if not origin:
+        return True
+    if origin.lower().rstrip("/") in ALLOWED_ORIGINS:
+        return True
+    host = (headers.get("x-forwarded-host") or headers.get("host") or "").split(",")[0].strip().lower()
+    try:
+        return bool(host) and urlsplit(origin).netloc.lower() == host
+    except ValueError:
+        return False
+
+
 CORS_ORIGINS = [o.strip() for o in os.environ.get("SG_CORS_ORIGINS", "").split(",") if o.strip()]
 
 
@@ -161,13 +238,16 @@ async def guard(request: Request, call_next):
                     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS", "Access-Control-Expose-Headers": "X-SG-Upstream,X-SG-Endpoint,X-SG-Request-Id,X-SG-Cache,Mcp-Session-Id"}
         if request.method == "OPTIONS":
             return Response(status_code=204, headers=cors)
+    if p.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and not origin_ok(request.headers):
+        return JSONResponse({"detail": "Cross-origin request refused"}, status_code=403)   # CSRF: SameSite=Lax alone doesn't cover same-site origins
     # admin protection for the management API (UI shell stays public so the login page can load)
     if config.ADMIN_PASSWORD and p.startswith("/api/") and p not in ("/api/login", "/api/session", "/api/ws"):
         ip = request.client.host if request.client else "?"
-        if not request_authed(request.headers, request.cookies):
+        if request.headers.get("authorization") and not valid_session(request.cookies.get(COOKIE)) and _locked(ip):
+            # a locked-out client must not make us run the password hash at all (it is the expensive part)
+            return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
+        if not await asyncio.to_thread(request_authed, request.headers, request.cookies):   # scrypt must not block the event loop
             if request.headers.get("authorization"):   # a wrong password was presented: count it, like the login form does
-                if _locked(ip):
-                    return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
                 _fail(ip)
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     audited = None if is_gateway else audit.classify(request.method, p)
@@ -192,7 +272,7 @@ async def guard(request: Request, call_next):
 
 
 def admin_actor() -> str:
-    return os.environ.get("SG_ADMIN_USER", "admin") if config.ADMIN_PASSWORD else "open-access"
+    return admin_user() if config.ADMIN_PASSWORD else "open-access"
 
 
 class LoginIn(BaseModel):
@@ -227,6 +307,7 @@ def change_password(body: PasswordIn, request: Request):
     if body.new == body.current:
         raise HTTPException(400, "The new password must differ from the current one")
     config.set_admin_password(body.new)
+    revoke_session(everyone=True)   # the password is part of every signature anyway; also drop the rows
     _fails.pop(ip, None)
     r = JSONResponse({"ok": True})   # every other session is now invalid; keep this browser signed in
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
@@ -241,7 +322,7 @@ def login(body: LoginIn, request: Request):
         return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
     ok = (not config.ADMIN_PASSWORD) or (
         config.verify_password(body.password)
-        and secrets.compare_digest(body.username, os.environ.get("SG_ADMIN_USER", "admin")))
+        and _user_ok(body.username))
     if not ok:
         _fail(ip)
         audit.record(body.username[:60], ip, "login failed", "session", status=401, method="POST", path="/api/login")
@@ -255,7 +336,9 @@ def login(body: LoginIn, request: Request):
 
 
 @app.post("/api/logout")
-def logout():
+def logout(request: Request):
+    if not revoke_session(request.cookies.get(COOKIE)):   # server side: a copy of the cookie stops working too
+        return JSONResponse({"detail": "Could not end the session, try again"}, status_code=500)
     r = JSONResponse({"ok": True})
     r.delete_cookie(COOKIE)
     return r

@@ -43,6 +43,7 @@ class GatewayModelIn(BaseModel):
     cache_ttl: Optional[int] = None
     cache_any_temperature: bool = False
     cache_streaming: bool = False
+    cache_per_key: bool = False
     cache_replay_speed: str = "instant"
     compress_mode: Optional[str] = None  # None = inherit global; off | shadow | on
     guardrails: Optional[dict] = None  # None = all off
@@ -146,7 +147,7 @@ def apply_models(gw: Gateway, body: GatewayIn, s: Session):
                           max_tokens_cap=gmi.max_tokens_cap or None, default_params=gmi.default_params or {},
                           cache_enabled=gmi.cache_enabled, cache_ttl=gmi.cache_ttl or None,
                           cache_any_temperature=gmi.cache_any_temperature, compress_mode=gmi.compress_mode or None,
-                          cache_streaming=gmi.cache_streaming, cache_replay_speed=gmi.cache_replay_speed,
+                          cache_streaming=gmi.cache_streaming, cache_per_key=gmi.cache_per_key, cache_replay_speed=gmi.cache_replay_speed,
                           guardrails=gmi.guardrails or None)
         s.add(gm)
         s.flush()
