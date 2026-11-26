@@ -21,11 +21,16 @@ def _hash_password(pw: str) -> str:
     return "scrypt$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(h).decode()
 
 
+import threading
+_SCRYPT_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SG_MAX_PASSWORD_CHECKS", "4")))   # each check needs ~16 MiB and a CPU core
+
+
 def _check_hash(pw: str, stored: str) -> bool:
     import base64, hashlib, hmac
     try:
         _, salt, h = stored.split("$")
-        got = hashlib.scrypt(pw.encode(), salt=base64.b64decode(salt), n=2 ** 14, r=8, p=1, dklen=32)
+        with _SCRYPT_SLOTS:   # at most a few verifications at once, however many requests are trying passwords
+            got = hashlib.scrypt(pw.encode(), salt=base64.b64decode(salt), n=2 ** 14, r=8, p=1, dklen=32)
         return hmac.compare_digest(got, base64.b64decode(h))
     except Exception:  # noqa: BLE001
         return False

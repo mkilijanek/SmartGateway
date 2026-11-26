@@ -168,10 +168,11 @@ async def guard(request: Request, call_next):
     # admin protection for the management API (UI shell stays public so the login page can load)
     if config.ADMIN_PASSWORD and p.startswith("/api/") and p not in ("/api/login", "/api/session", "/api/ws"):
         ip = request.client.host if request.client else "?"
-        if not request_authed(request.headers, request.cookies):
+        if request.headers.get("authorization") and not valid_session(request.cookies.get(COOKIE)) and _locked(ip):
+            # a locked-out client must not make us run the password hash at all (it is the expensive part)
+            return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
+        if not await asyncio.to_thread(request_authed, request.headers, request.cookies):   # scrypt must not block the event loop
             if request.headers.get("authorization"):   # a wrong password was presented: count it, like the login form does
-                if _locked(ip):
-                    return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
                 _fail(ip)
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     audited = None if is_gateway else audit.classify(request.method, p)
