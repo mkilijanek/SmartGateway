@@ -243,9 +243,12 @@ The admin UI and API always require a password (see Configuration), but the gate
 - Consider not publishing the admin UI at all: route only `/gw/`, `/v1/`, `/unified/` and `/mcp/` through the public proxy and keep `/` and `/api/` on a private network or VPN.
 - Request bodies are capped (`SG_MAX_BODY_MB`, default 100 for gateway calls; `SG_MAX_ADMIN_BODY_MB`, default 20), and all request bodies in flight together are bounded too (`SG_MAX_INFLIGHT_BODY_MB`, default 512; beyond it requests get 503 + Retry-After). Public error messages are generic; full upstream errors and routing headers are only shown to the signed-in admin (`SG_VERBOSE_ERRORS=1` shows them to everyone, for private networks).
 - Upstream response headers such as cookies, CORS and server banners are never passed on to clients. The container runs as a non-root user and its dependencies are pinned to patched releases (`backend/requirements.txt`); rebuild regularly.
-- Content filter regexes are written by the admin and run on client text: avoid patterns with nested quantifiers.
+- Content filter regexes are written by the admin and run on client text; each match has a time limit (`SG_FILTER_REGEX_TIMEOUT_MS`) and a request whose filter times out is blocked, but avoid patterns with nested quantifiers anyway.
+- Publishing the port: `SG_BIND=127.0.0.1` keeps it on this host when the TLS proxy runs beside the container.
 
 ## Security notes for contributors
+
+How to report a vulnerability, what is in scope and what to expect: see [SECURITY.md](SECURITY.md).
 
 - Never commit `.env`, `secret.key`, `*.db`, backups or exported images (all are in `.gitignore`). Use `.env.example` as the template.
 - Set `SG_ADMIN_PASSWORD` in any deployment reachable from a network; without it the UI and management API are open.
