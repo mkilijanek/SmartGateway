@@ -265,6 +265,7 @@ class McpGateway(SQLModel, table=True):
     slug: str = Field(index=True, unique=True)
     name: str
     description: Optional[str] = None
+    session_scope: str = "shared"  # shared: one upstream MCP session per endpoint for all clients | key: one per gateway API key
     created_at: float = Field(default_factory=time.time)
 
 

@@ -2,7 +2,7 @@
 import re
 import secrets
 import time
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ class GatewayIn(BaseModel):
     name: str
     slug: Optional[str] = None
     description: Optional[str] = None
+    session_scope: Literal["shared", "key"] = "shared"
     members: list[MemberIn] = []
 
 
@@ -97,7 +98,7 @@ def create_gateway(body: GatewayIn, s: Session = Depends(get_session)):
     slug = slugify(body.slug or body.name)
     if s.exec(select(McpGateway).where(McpGateway.slug == slug)).first():
         raise HTTPException(400, f"Slug '{slug}' already in use")
-    gw = McpGateway(slug=slug, name=body.name.strip(), description=body.description or None)
+    gw = McpGateway(slug=slug, name=body.name.strip(), description=body.description or None, session_scope=body.session_scope)
     s.add(gw)
     s.flush()
     _apply(gw, body, s)
@@ -117,6 +118,7 @@ def update_gateway(gw_id: int, body: GatewayIn, s: Session = Depends(get_session
     if other and other.id != gw.id:
         raise HTTPException(400, f"Slug '{slug}' already in use")
     gw.slug, gw.name, gw.description = slug, body.name.strip(), body.description or None
+    gw.session_scope = body.session_scope
     s.add(gw)
     _apply(gw, body, s)
     s.commit()

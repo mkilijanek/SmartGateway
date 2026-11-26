@@ -115,7 +115,8 @@ async def _forward(gw, key, method: str, name: str, ep_entry: dict, fn):
             ep = s.get(McpEndpoint, ep_entry["endpoint_id"])
         if ep is None:
             raise McpError("The MCP endpoint no longer exists")
-        result = await fn(registry.session_for(ep))
+        scope = (f"key:{key.id}" if key is not None else "open") if getattr(gw, "session_scope", "shared") == "key" else ""
+        result = await fn(registry.session_for(ep, scope))
     except McpError as e:
         err = e
     except (httpx.HTTPError, asyncio.TimeoutError) as e:
