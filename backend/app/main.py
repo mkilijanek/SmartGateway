@@ -64,7 +64,7 @@ _fails: dict[str, list] = {}
 
 def _sign(exp: int) -> str:
     # the password is part of the signed text, so changing SG_ADMIN_PASSWORD signs every existing session out
-    pw = hashlib.sha256(config.ADMIN_PASSWORD.encode()).hexdigest()
+    pw = hmac.new(crypto._load_secret(), b"pw:" + config.ADMIN_PASSWORD.encode(), hashlib.sha256).hexdigest()   # keyed, not a bare hash of the password
     return hmac.new(crypto._load_secret(), f"admin:{exp}:{pw}".encode(), hashlib.sha256).hexdigest()
 
 
