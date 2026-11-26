@@ -42,17 +42,17 @@ def _token(request: Request) -> str:
 
 
 def authenticate(slug: str, request: Request):
-    """(gateway, key, error). A gateway without keys is open."""
+    """(gateway, key, error). A gateway with no keys at all is open; once it has any key, a disabled or expired key never reopens it."""
     with session() as s:
         gw = s.exec(select(McpGateway).where(McpGateway.slug == slug)).first()
         if gw is None:
             return None, None, _http_err(404, f"MCP gateway '{slug}' not found")
-        keys = s.exec(select(McpApiKey).where(McpApiKey.gateway_id == gw.id, McpApiKey.enabled == True)).all()  # noqa: E712
+        keys = s.exec(select(McpApiKey).where(McpApiKey.gateway_id == gw.id)).all()   # disabled keys count: disabling the last one must not open the gateway
         if not keys:
             return gw, None, None
         tok = _token(request)
         key = next((k for k in keys if tok and k.key_hash == hash_key(tok)), None)
-        if key is None or (key.expires_at and key.expires_at < time.time()):
+        if key is None or not key.enabled or (key.expires_at and key.expires_at < time.time()):
             return None, None, _http_err(401, "A valid API key is required", {"WWW-Authenticate": 'Bearer realm="smartgateway"'})
         key.last_used = time.time()
         s.add(key)

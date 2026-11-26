@@ -264,12 +264,17 @@ def test_keys_allowed_tools_rpm_and_logs(client, servers):
         r = rpc(client, path, "tools/list", headers=bearer).json()
     assert r["error"]["message"].startswith("Rate limit")
     client.patch(f"/api/mcp-keys/{key['id']}", json={"enabled": False})
-    assert rpc(client, path, "tools/list", headers=bearer).status_code == 200                      # every key disabled: the gateway is open again
+    assert rpc(client, path, "tools/list", headers=bearer).status_code == 401                      # SG-010: every key disabled must not open the gateway
+    assert rpc(client, path, "tools/list").status_code == 401
+    assert next(g for g in client.get("/api/mcp-gateways").json() if g["id"] == gw["id"])["has_keys"] is True   # the UI must not call a closed gateway open
+    client.patch(f"/api/mcp-keys/{key['id']}", json={"enabled": True})
+    assert rpc(client, path, "tools/list", headers=bearer).status_code == 200
     time.sleep(0.3)
     calls = client.get(f"/api/mcp-gateways/{gw['id']}/calls").json()
     assert any(c["name"] == "a__search" and c["ok"] for c in calls["recent"]) and "SHOULD-NOT-BE-LOGGED" not in json.dumps(calls)
     assert calls["stats"] and calls["stats"][0]["calls"] >= 1
     assert client.delete(f"/api/mcp-keys/{key['id']}").status_code == 200
+    assert rpc(client, path, "tools/list").status_code == 200                                      # no keys at all: open (explicit, UI says so)
 
 
 def test_expired_key_and_retention(client, servers):
