@@ -10,6 +10,7 @@ ADMIN_PASSWORD = os.environ.get("SG_ADMIN_PASSWORD", "")
 ALLOW_OPEN_ADMIN = os.environ.get("SG_ALLOW_OPEN_ADMIN", "").lower() in ("1", "true", "yes")
 PASSWORD_SOURCE = "env" if ADMIN_PASSWORD else "open"
 GENERATED_ADMIN_PASSWORD = False
+GENERATED_ADMIN_PASSWORD_IS_NEW = False   # True only on the start that created the password; later starts must not print it again
 MIN_PASSWORD = 10
 
 
@@ -40,7 +41,7 @@ def verify_password(candidate: str) -> bool:
 
 
 def ensure_admin_password() -> None:
-    global ADMIN_PASSWORD, GENERATED_ADMIN_PASSWORD, PASSWORD_SOURCE
+    global ADMIN_PASSWORD, GENERATED_ADMIN_PASSWORD, GENERATED_ADMIN_PASSWORD_IS_NEW, PASSWORD_SOURCE
     if ADMIN_PASSWORD or ALLOW_OPEN_ADMIN:
         return
     import secrets
@@ -51,7 +52,8 @@ def ensure_admin_password() -> None:
             ADMIN_PASSWORD, PASSWORD_SOURCE = f.read().strip(), "ui"
         return
     path = os.path.join(DATA_DIR, "admin_password")
-    if not os.path.exists(path):
+    GENERATED_ADMIN_PASSWORD_IS_NEW = not os.path.exists(path)
+    if GENERATED_ADMIN_PASSWORD_IS_NEW:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(secrets.token_urlsafe(18))

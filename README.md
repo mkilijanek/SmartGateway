@@ -62,7 +62,7 @@ Upstreams are OpenAI-compatible; limits of the translation (for example `web_sea
 
 ## Configuration
 
-`SG_ADMIN_PASSWORD` (+ `SG_ADMIN_USER`, default `admin`) is the UI/API login. **The admin API fails closed:** if it is unset, a random password is generated once, kept in the data volume (`admin_password`) and printed in the container log (`docker compose logs`); you can then choose your own in **Settings → Admin password** (stored as a salted hash; the environment variable, when set, always wins); `SG_ALLOW_OPEN_ADMIN=1` disables login entirely (trusted dev machines only). The container runs as a non-root user · `SG_PORT` · `SG_SECRET_KEY` (otherwise a key file is generated
+`SG_ADMIN_PASSWORD` (+ `SG_ADMIN_USER`, default `admin`) is the UI/API login. **The admin API fails closed:** if it is unset, a random password is generated once, kept in the data volume (`admin_password`) and printed in the container log (`docker compose logs`) **on the first start only** (afterwards read it from `/data/admin_password`); you can then choose your own in **Settings → Admin password** (stored as a salted hash; the environment variable, when set, always wins); `SG_ALLOW_OPEN_ADMIN=1` disables login entirely (trusted dev machines only). The container runs as a non-root user · `SG_PORT` · `SG_SECRET_KEY` (otherwise a key file is generated
 in the data volume, back it up together with the database) · `SG_CORS_ORIGINS` (browser clients) · `SG_SSL_CERT`/`SG_SSL_KEY` (HTTPS, or use
 a reverse proxy) · `SG_DEFAULT_SLOTS` · `SG_HEALTH_INTERVAL` · `SG_FALLBACK_GRACE` · `SG_REDIS_URL`. Data lives in the `sg-data` volume
 (SQLite); schema upgrades are applied automatically on start. Back up the data volume as a whole: without `secret.key` stored upstream keys

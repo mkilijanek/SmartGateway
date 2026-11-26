@@ -29,9 +29,12 @@ from .router import health
 async def lifespan(app: FastAPI):
     init_db()
     log = logging.getLogger("smartgateway")
-    if config.GENERATED_ADMIN_PASSWORD:
+    if config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW:
         print(f"SmartGateway: SG_ADMIN_PASSWORD is not set, so a random admin password was generated (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'): "
-              f"{config.ADMIN_PASSWORD}  (stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD to choose your own)", flush=True)
+              f"{config.ADMIN_PASSWORD}  (shown only this once; also stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD or change it in Settings)", flush=True)
+    elif config.GENERATED_ADMIN_PASSWORD:
+        print(f"SmartGateway: using the generated admin password stored in {config.DATA_DIR}/admin_password (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'); "
+              "change it in Settings -> Admin password or set SG_ADMIN_PASSWORD", flush=True)
     elif not config.ADMIN_PASSWORD:
         log.warning("SG_ALLOW_OPEN_ADMIN is set: the web UI and management API are open to anyone who can reach this port")
     with session() as s:
