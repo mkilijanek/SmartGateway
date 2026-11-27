@@ -7,10 +7,15 @@ ADMIN_PASSWORD = os.environ.get("SG_ADMIN_PASSWORD", "")
 #   ui        a password chosen in Settings, stored as a salted scrypt hash in the data volume
 #   generated random, created once on first start, kept in the data volume and printed in the start-up log
 #   open      SG_ALLOW_OPEN_ADMIN=1 (trusted dev machines only): no login at all
+#   setup     a brand-new install (no data volume contents, no password anywhere): the web UI shows a setup wizard where the admin account is
+#             created, after entering the one-time setup code printed in the start-up log. SG_SETUP_WIZARD=0 turns the wizard off (a random
+#             password is generated instead). An install that already has data or any credentials never enters setup mode.
 ALLOW_OPEN_ADMIN = os.environ.get("SG_ALLOW_OPEN_ADMIN", "").lower() in ("1", "true", "yes")
 PASSWORD_SOURCE = "env" if ADMIN_PASSWORD else "open"
 GENERATED_ADMIN_PASSWORD = False
 GENERATED_ADMIN_PASSWORD_IS_NEW = False   # True only on the start that created the password; later starts must not print it again
+SETUP_WIZARD = os.environ.get("SG_SETUP_WIZARD", "1").lower() not in ("0", "false", "no")
+SETUP_PENDING = False                      # True until the first-run wizard has created the admin account; the admin API is closed meanwhile
 MIN_PASSWORD = 10
 
 
@@ -104,6 +109,9 @@ def ensure_admin_password() -> None:
             ADMIN_PASSWORD, PASSWORD_SOURCE = f.read().strip(), "ui"
         return
     path = os.path.join(DATA_DIR, "admin_password")
+    if _setup_needed(path):
+        _start_setup()
+        return
     GENERATED_ADMIN_PASSWORD_IS_NEW = not os.path.exists(path)
     if GENERATED_ADMIN_PASSWORD_IS_NEW:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -112,6 +120,60 @@ def ensure_admin_password() -> None:
     with open(path) as f:
         ADMIN_PASSWORD = f.read().strip()
     GENERATED_ADMIN_PASSWORD, PASSWORD_SOURCE = True, "generated"
+
+
+def _setup_needed(generated_path: str) -> bool:
+    """A fresh install: no credentials anywhere (the caller has checked env, open mode and the hash), no generated password and no database yet,
+    or the wizard was started earlier and not finished. Anything that already holds data keeps the old behaviour."""
+    if not SETUP_WIZARD or os.path.exists(generated_path):
+        return False
+    return os.path.exists(os.path.join(DATA_DIR, "setup_code")) or not os.path.exists(os.path.join(DATA_DIR, "smartgateway.db"))
+
+
+def _start_setup() -> None:
+    global SETUP_PENDING
+    import secrets
+    path = os.path.join(DATA_DIR, "setup_code")
+    if not os.path.exists(path):
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"    # no look-alikes (0/O, 1/I)
+        code = "-".join("".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(code)
+    SETUP_PENDING = True
+
+
+def setup_code() -> str:
+    try:
+        with open(os.path.join(DATA_DIR, "setup_code")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def stored_username() -> str:
+    """The admin user name chosen in the setup wizard ('' for installs that use SG_ADMIN_USER / the default)."""
+    try:
+        with open(os.path.join(DATA_DIR, "admin_user")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def complete_setup(username: str, password: str) -> None:
+    """Create the admin account chosen in the wizard: user name file, password hash, and the setup code is burned."""
+    global SETUP_PENDING
+    upath = os.path.join(DATA_DIR, "admin_user")
+    fd = os.open(upath + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(username)
+    os.replace(upath + ".tmp", upath)
+    set_admin_password(password)
+    try:
+        os.remove(os.path.join(DATA_DIR, "setup_code"))
+    except OSError:
+        pass
+    SETUP_PENDING = False
 
 
 def set_admin_password(new: str) -> None:

@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, Loader2, Plus, RefreshCw, Trash2, Sparkles } from "lucide-react";
+import { ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Trash2, Sparkles } from "lucide-react";
 import { ALL_CAPS, api } from "../api";
 import { useLive } from "../live";
 import { CapChip, Empty, Modal, PageHeader, StatusDot } from "../components/ui";
+import OAuthAccountDialog, { AccountKind, OAuthAccountFlow } from "../components/OAuthAccountDialog";
+import { LimitBars } from "../components/PlanLimits";
 
 const TYPES: Record<string, { label: string; name: string; base_url: string; keyHint: string; notes: string[] }> = {
   generic: { label: "OpenAI-compatible", name: "", base_url: "", keyHint: "optional", notes: [] },
@@ -20,14 +22,21 @@ const TYPES: Record<string, { label: string; name: string; base_url: string; key
   },
 };
 
+/** Subscription accounts: no URL or key, they sign in instead (see components/OAuthAccountDialog). */
+const ACCOUNT_TYPES: Record<string, { label: string; kind: AccountKind }> = {
+  "codex-oauth": { label: "ChatGPT / Codex account", kind: "codex" },
+  "claude-oauth": { label: "Claude account", kind: "claude" },
+};
+
 function AddEndpoint({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [kind, setKind] = useState("generic");
   const [f, setF] = useState({ name: "", base_url: "", api_key: "", probe: true });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const t = TYPES[kind];
-  const hosted = kind !== "generic";
-  const pick = (k: string) => { setKind(k); setErr(""); setF((x) => ({ ...x, base_url: TYPES[k].base_url, name: !x.name || Object.values(TYPES).some((v) => v.name === x.name) ? TYPES[k].name : x.name })); };
+  const account = ACCOUNT_TYPES[kind];
+  const t = TYPES[kind] || TYPES.generic;
+  const hosted = kind !== "generic" && !account;
+  const pick = (k: string) => { setKind(k); setErr(""); if (ACCOUNT_TYPES[k]) return; setF((x) => ({ ...x, base_url: TYPES[k].base_url, name: !x.name || Object.values(TYPES).some((v) => v.name === x.name) ? TYPES[k].name : x.name })); };
   const submit = async () => {
     setBusy(true); setErr("");
     try { await api("/api/endpoints", { method: "POST", json: { ...f, api_key: f.api_key || null, probe: hosted ? false : f.probe, provider: hosted ? kind : null } }); onDone(); onClose(); }
@@ -38,8 +47,10 @@ function AddEndpoint({ onClose, onDone }: { onClose: () => void; onDone: () => v
     <Modal title="Add endpoint" onClose={onClose}>
       <div className="space-y-4">
         <div><label className="lbl">Type</label>
-          <div className="flex flex-wrap gap-2">{Object.entries(TYPES).map(([k, v]) => (
+          <div className="flex flex-wrap gap-2">{[...Object.entries(TYPES), ...Object.entries(ACCOUNT_TYPES)].map(([k, v]) => (
             <button key={k} type="button" className={`btn ${kind === k ? "primary" : ""}`} onClick={() => pick(k)}>{v.label}</button>))}</div></div>
+        {account && <OAuthAccountFlow key={account.kind} kind={account.kind} onClose={onClose} onDone={onDone} />}
+        {!account && <>
         <div><label className="lbl">Name</label><input className="input" placeholder="e.g. GPU box #1" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
         <div><label className="lbl">Base URL</label><input className="input mono" placeholder="http://host:8000/v1" value={f.base_url} readOnly={hosted} onChange={(e) => setF({ ...f, base_url: e.target.value })} /></div>
         <div><label className="lbl">API key <span className="normal-case text-[#787884]">({t.keyHint})</span></label><input className="input mono" type="password" autoComplete="off" placeholder="sk-…" value={f.api_key} onChange={(e) => setF({ ...f, api_key: e.target.value })} /></div>
@@ -55,6 +66,7 @@ function AddEndpoint({ onClose, onDone }: { onClose: () => void; onDone: () => v
             {busy ? <><Loader2 size={16} className="animate-spin" /> {hosted ? "Reading catalog…" : "Discovering models…"}</> : <><Sparkles size={16} /> Add &amp; discover</>}
           </button>
         </div>
+        </>}
       </div>
     </Modal>
   );
@@ -63,12 +75,13 @@ function AddEndpoint({ onClose, onDone }: { onClose: () => void; onDone: () => v
 export default function Endpoints() {
   const [eps, setEps] = useState<any[]>([]);
   const [adding, setAdding] = useState(false);
+  const [account, setAccount] = useState<{ kind: AccountKind; endpointId: number } | null>(null);   // "Sign in again" for an existing account
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<Set<number>>(new Set());   // collapsed by default; click an endpoint to see its models
   const toggle = (id: number) => setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const { snapshot } = useLive();
   const load = () => api("/api/endpoints").then(setEps);
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, []);   // keeps the plan usage on the cards current
 
   const rescan = async (id: number) => { setBusy(id); try { await api(`/api/endpoints/${id}/rescan`, { method: "POST" }); await load(); } catch (e: any) { alert(e.message); } setBusy(null); };
   const del = async (ep: any) => { if (confirm(`Delete endpoint "${ep.name}" and remove its models from all gateways?`)) { await api(`/api/endpoints/${ep.id}`, { method: "DELETE" }); load(); } };
@@ -90,19 +103,25 @@ export default function Endpoints() {
                   <ChevronRight size={16} className={`shrink-0 text-[#787884] transition-transform ${open.has(ep.id) ? "rotate-90" : ""}`} />
                   <StatusDot status={status} />
                   <div>
-                    <div className="flex items-center gap-2 text-lg font-semibold">{ep.name}{ep.provider && <span className="chip" style={{ color: "#a79cff", background: "#6c5ce722" }}>{ep.provider === "opencode-go" ? "OpenCode Go" : "OpenCode Zen"}</span>}</div>
-                    <div className="mono text-xs text-[#8e8e9a]">{ep.base_url}{ep.api_key ? " · key set" : ""}{ep.slot_source && ep.slot_source !== "none" ? ` · live load via ${ep.slot_source}` : ""}</div>
+                    <div className="flex items-center gap-2 text-lg font-semibold">{ep.name}{ep.provider && <span className="chip" style={{ color: "#a79cff", background: "#6c5ce722" }}>{ep.provider === "opencode-go" ? "OpenCode Go" : ep.provider === "codex-oauth" ? "ChatGPT / Codex" : ep.provider === "claude-oauth" ? "Claude" : "OpenCode Zen"}</span>}</div>
+                    <div className="mono text-xs text-[#8e8e9a]">{ep.account ? `${ep.account.email || "signed in"}${ep.account.plan ? ` · ${ep.account.plan} plan` : ""}${ep.account.needs_login ? " · needs sign-in" : ""}` : ep.base_url}{ep.api_key ? " · key set" : ""}{ep.slot_source && ep.slot_source !== "none" ? ` · live load via ${ep.slot_source}` : ""}</div>
                     <div className="mt-0.5 text-xs text-[#787884]">{ep.models.length} model{ep.models.length === 1 ? "" : "s"}{ep.models.length ? ` · ${ep.models.filter((m: any) => m.enabled).length} enabled` : ""}</div>
                   </div>
                   {status === "offline" && ep.last_error && <span className="chip" style={{ color: "#d9776f", background: "#d9776f22" }}>{ep.last_error}</span>}
                 </div>
                 <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+                  {(ep.provider === "codex-oauth" || ep.provider === "claude-oauth") && <button className={`btn ${ep.account?.needs_login ? "primary" : ""}`} onClick={() => setAccount({ kind: ep.provider === "claude-oauth" ? "claude" : "codex", endpointId: ep.id })}><KeyRound size={15} /> Sign in again</button>}
                   <button className="btn" disabled={busy === ep.id} onClick={() => rescan(ep.id)}>
                     <RefreshCw size={15} className={busy === ep.id ? "animate-spin" : ""} /> Re-scan
                   </button>
                   <button className="btn danger" onClick={() => del(ep)}><Trash2 size={15} /></button>
                 </div>
               </div>
+              {"limits" in ep && (
+                <div className="mt-4 rounded-lg border border-white/5 bg-white/[0.02] p-3" data-testid={`plan-usage-${ep.id}`}>
+                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[#787884]">Plan usage</div>
+                  <LimitBars limits={ep.limits} compact />
+                </div>)}
               {open.has(ep.id) && <div className="mt-5 overflow-x-auto scroll-thin">
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-xs uppercase tracking-wider text-[#787884]">
@@ -141,6 +160,7 @@ export default function Endpoints() {
         })}
       </div>
       {adding && <AddEndpoint onClose={() => setAdding(false)} onDone={load} />}
+      {account && <OAuthAccountDialog kind={account.kind} endpointId={account.endpointId} onClose={() => setAccount(null)} onDone={load} />}
     </div>
   );
 }

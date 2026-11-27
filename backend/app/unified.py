@@ -84,6 +84,7 @@ def sync_models(entries: list[dict]) -> None:
         wanted = {e["name"]: e["model_id"] for e in entries}
         off = {e["name"] for e in entries if e.get("disabled")}
         voices_of = {e["name"]: e.get("voices") for e in entries}
+        audio_of = {e["name"]: e.get("audio_defaults") for e in entries}
         for name, gm in have.items():
             if name not in wanted:
                 for mem in s.exec(select(Member).where(Member.gateway_model_id == gm.id)).all():
@@ -101,6 +102,10 @@ def sync_models(entries: list[dict]) -> None:
             voices = clean_voices(voices_of.get(name)) or None   # TTS: the voices offered by GET /audio/voices (None = whatever the upstream reports)
             if (gm.voices or None) != voices:
                 gm.voices = voices
+                s.add(gm)
+            audio = audio_of.get(name) or None   # audio defaults of a directly exposed audio model
+            if (gm.audio_defaults or None) != audio:
+                gm.audio_defaults = audio
                 s.add(gm)
             mems = s.exec(select(Member).where(Member.gateway_model_id == gm.id)).all()
             if len(mems) == 1 and mems[0].model_id == model_id:

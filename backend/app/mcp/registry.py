@@ -27,14 +27,14 @@ def headers_of(ep: McpEndpoint) -> dict:
         return {}
 
 
-MAX_SCOPED_SESSIONS = 64   # per endpoint; the oldest scoped session is closed when exceeded
-
-
 class _UnreadableHeaders(McpSession):
     """Stands in for an endpoint whose stored headers cannot be decrypted: every call fails instead of going out without its credentials."""
 
     async def ensure(self):
         raise McpError("The stored headers of this MCP endpoint cannot be decrypted (secret.key / SG_SECRET_KEY changed?). Enter them again.")
+
+
+MAX_SCOPED_SESSIONS = 64   # per endpoint; the oldest scoped session is closed when exceeded
 
 
 def session_for(ep: McpEndpoint, scope: str = "") -> McpSession:

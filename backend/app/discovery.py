@@ -82,6 +82,7 @@ class DiscoveredModel:
     max_slots: Optional[int] = None
     context_length: Optional[int] = None
     free: bool = False  # hosted catalogs: listed price is 0 (safe to use for a key check)
+    cost: Optional[dict] = None  # hosted catalogs: the catalog's own price block (see pricing.py)
 
 
 def normalize_base_url(url: str) -> str:
@@ -301,6 +302,7 @@ async def discover(base_url: str, api_key: Optional[str], probe: bool = True, pr
                 dm.context_length = extract_context(it)
                 price = (((it.get("cost") or {}).get("text") or {}).get("input") or {}).get("price") if isinstance(it.get("cost"), dict) else None
                 dm.free = price == 0
+                dm.cost = it.get("cost") if isinstance(it.get("cost"), dict) else None
                 results.append(dm)
             return results
         props = await probe_props(client, base, api_key)

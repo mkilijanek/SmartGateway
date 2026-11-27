@@ -13,7 +13,7 @@ const DEFAULT = {
 
 export const guardrailsActive = (g: any) => !!g && ["pii", "injection", "filters", "output"].some((k) => g[k]?.mode && g[k].mode !== "off");
 
-export default function GuardrailsEditor({ value, onChange }: { value: any; onChange: (v: any) => void }) {
+export default function GuardrailsEditor({ value, onChange, alwaysOpen }: { value: any; onChange: (v: any) => void; alwaysOpen?: boolean }) {
   const g = { ...DEFAULT, ...(value || {}), pii: { ...DEFAULT.pii, ...(value?.pii || {}) }, injection: { ...DEFAULT.injection, ...(value?.injection || {}) },
     filters: { ...DEFAULT.filters, ...(value?.filters || {}) }, output: { ...DEFAULT.output, ...(value?.output || {}) } };
   const [schemaText, setSchemaText] = useState(g.output.json_schema ? JSON.stringify(g.output.json_schema, null, 2) : "");
@@ -37,7 +37,7 @@ export default function GuardrailsEditor({ value, onChange }: { value: any; onCh
   };
 
   return (
-    <details className="mt-4 rounded-md border border-white/[0.08] p-3" open={on}>
+    <details className={`rounded-md border border-white/[0.08] p-3 ${alwaysOpen ? "" : "mt-4"}`} open={on || !!alwaysOpen}>
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium"><ShieldCheck size={15} /> Safety &amp; guardrails
         <span className="chip" style={{ color: on ? "#5fb585" : "#8e8e9a", background: (on ? "#5fb585" : "#8e8e9a") + "1f" }}>{on ? "active" : "off"}</span></summary>
       <p className="mt-2 text-xs text-[#787884]">All checks are off by default and cannot be bypassed by clients. Only counts and rule names are logged, never the matched text.</p>

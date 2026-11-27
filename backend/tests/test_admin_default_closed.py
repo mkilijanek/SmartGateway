@@ -7,6 +7,7 @@ def test_without_password_one_is_generated_and_kept(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "")
     monkeypatch.setattr(config, "ALLOW_OPEN_ADMIN", False)
+    monkeypatch.setattr(config, "SETUP_WIZARD", False)   # this is the legacy path: a random password instead of the wizard
     config.ensure_admin_password()
     first = config.ADMIN_PASSWORD
     assert len(first) >= 20 and config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW
@@ -37,6 +38,7 @@ def test_password_change_via_api(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "")
     monkeypatch.setattr(config, "ALLOW_OPEN_ADMIN", False)
     monkeypatch.setattr(config, "PASSWORD_SOURCE", "open")
+    monkeypatch.setattr(config, "SETUP_WIZARD", False)
     config.ensure_admin_password()
     old = config.ADMIN_PASSWORD
     main._fails.clear()

@@ -18,7 +18,8 @@ from . import config, events, settings_store, unified
 from .voices import parse_voices as _parse_voices, voice_id as _voice_id
 from .compat import anthropic as anth
 from .compat import responses as resp_api
-from . import crypto
+from . import accounts, crypto
+from .accounts import upstream as accounts_upstream
 from .crypto import hash_key
 from .db import session
 from . import guardrails
@@ -343,6 +344,15 @@ async def unified_voices(aliases: list[dict], mode: str, request: Request):
     return _voices_reply(_merge_voices(parts))
 
 
+def _cached_tokens(usage: dict) -> int:
+    """Prompt tokens the upstream served from its cache (OpenAI: prompt_tokens_details.cached_tokens; some servers: cached_tokens)."""
+    try:
+        d = usage.get("prompt_tokens_details") or {}
+        return max(0, int(d.get("cached_tokens") or usage.get("cached_tokens") or 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
 async def log_request(rec: RequestLog, comp_events: Optional[list] = None) -> None:
     if no_request_log.get():  # synthetic stress-test traffic is not logged
         return
@@ -474,6 +484,15 @@ async def dispatch(gw: Gateway, key, route: str, body: dict, form_files, headers
                     body[k] = min(int(body[k]), gm.max_tokens_cap)
             if not have:
                 body["max_tokens"] = gm.max_tokens_cap
+
+    ad = gm.audio_defaults or {}   # per-model audio defaults: only what the client left out (a client's own value always wins)
+    if route == "audio/speech":
+        for k, v in (ad.get("speech") or {}).items():
+            body.setdefault(k, v)
+    elif route in ("audio/transcriptions", "audio/translations"):
+        for k, v in (ad.get("transcription") or {}).items():
+            if k != "language" or route == "audio/transcriptions":   # a translation is always into English
+                body.setdefault(k, v)
 
     prompt_est, out_est = estimate_tokens(route, body)
     try:
@@ -700,13 +719,16 @@ async def _route(gw, gm, key, route, body, form_files, headers_in, token, prompt
         url = f"{c.base_url}/{route}"
         t_send = time.time()
         try:
-            if form_files is not None:
-                req = client.build_request("POST", url, data={k: str(v) for k, v in fwd.items()},
-                                           files=form_files, headers=headers)
+            if accounts.is_oauth(c.provider):   # subscription account: sign-in, token refresh and the vendor's own API live in accounts/
+                resp = await accounts_upstream.send(client, c, route, fwd, form_files)
             else:
-                headers["Content-Type"] = "application/json"
-                req = client.build_request("POST", url, content=json.dumps(fwd), headers=headers)
-            resp = await client.send(req, stream=True)
+                if form_files is not None:
+                    req = client.build_request("POST", url, data={k: str(v) for k, v in fwd.items()},
+                                               files=form_files, headers=headers)
+                else:
+                    headers["Content-Type"] = "application/json"
+                    req = client.build_request("POST", url, content=json.dumps(fwd), headers=headers)
+                resp = await client.send(req, stream=True)
         except asyncio.CancelledError:
             scheduler.release(c, ok=True)
             raise
@@ -844,6 +866,7 @@ async def _route(gw, gm, key, route, body, form_files, headers_in, token, prompt
                 data = json.loads(raw)
                 usage = data.get("usage") or {} if isinstance(data, dict) else {}
                 rec.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                rec.cached_tokens = _cached_tokens(usage)
                 rec.completion_tokens = int(usage.get("completion_tokens") or 0)
                 if resp.status_code == 200 and isinstance(data, dict) and route in CHAT_ROUTES:
                     ch0 = (data.get("choices") or [{}])[0] or {}
@@ -896,6 +919,7 @@ async def _route(gw, gm, key, route, body, form_files, headers_in, token, prompt
                         finish = ch0.get("finish_reason") or finish
                         if obj.get("usage"):
                             rec.prompt_tokens = int(obj["usage"].get("prompt_tokens") or 0)
+                            rec.cached_tokens = _cached_tokens(obj["usage"])
                             rec.completion_tokens = int(obj["usage"].get("completion_tokens") or 0)
                         rewrite_model(obj, gm.public_name)
                         line = "data: " + json.dumps(obj, separators=(",", ":"))

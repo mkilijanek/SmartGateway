@@ -60,10 +60,29 @@ Anthropic and Responses requests are translated onto the same routing pipeline, 
 Upstreams are OpenAI-compatible; limits of the translation (for example `web_search` tools and `previous_response_id`) are listed under
 [Compatibility notes](#compatibility-notes).
 
+## Subscription accounts (ChatGPT / Codex, Claude)
+
+**Endpoints -> Add ChatGPT / Codex account** and **Add Claude account** sign in with a subscription instead of an API key. Each account becomes a normal endpoint: its models are discovered but stay disabled until you enable them (as on any endpoint), then appear in the gateway editor, and every gateway strategy applies, so several accounts can be pooled with failover when one hits its plan limit (HTTP 429). Clients keep using the OpenAI, Anthropic or Responses API; the gateway translates to the vendor's own API. Access tokens are refreshed automatically; if a login is revoked the endpoint shows "needs sign-in" and **Sign in again** restores it in place (models and gateways are kept). Tokens are stored encrypted in the data volume and never shown in the UI, logs or API. Only chat completions are served (no embeddings, audio or images).
+
+- **ChatGPT / Codex:** the Codex CLI's device-code sign-in: you get a short code and approve it at OpenAI in your browser; nothing to install, so it works in Docker.
+- **Claude:** you open a link, log in at claude.ai and paste the code the page shows back into the dialog (PKCE, no redirect to this server).
+
+Please note: both reuse the official CLIs' sign-in, which neither vendor offers as a public API. Use them for your own work and expect that they can change or stop working. **Anthropic's terms do not allow Claude subscription logins in third-party tools**, so using a Claude account here can get requests refused or the account restricted. Anthropic may only accept subscription tokens for requests that present themselves as Claude Code; the gateway does not do that unless you set `SG_CLAUDE_CODE_IDENTITY=1`, which adds Claude Code's identity line to the system prompt and is against Anthropic's terms. The sign-in endpoints and client ids can be overridden with `SG_CODEX_*` / `SG_CLAUDE_*` environment variables if a vendor changes them.
+
+## Cost tracking
+
+**Insights -> Cost Tracking** shows what the traffic costs and how full your plan limits are.
+
+- **Usage & cost:** spend per day and endpoint, per model and per gateway, over 24 hours to 90 days. Cost is computed from the request log: uncached input x input price + cached input x cache price + output x output price, for successful upstream requests (answers from the gateway's own cache are free). Pay-as-you-go endpoints (OpenCode Zen, API providers you set a price for) show real cost; subscriptions (ChatGPT / Codex, Claude, OpenCode Go) show the *API-equivalent value* of the same tokens, only where a price is known.
+- **Plan limits:** usage windows that the gateway reads from each vendor in the background (every 5 minutes, `SG_LIMITS_INTERVAL` in seconds, at least 60; `SG_LIMITS_POLL=0` turns it off; a failing account is asked less and less often) and on **Check now** / **Refresh**; reading usage costs no quota. The same bars appear on the **Dashboard** ("Plan limits") and on each account's card on the **Endpoints** page, with the reset time of every window; when a check fails the last reading stays visible, marked as stale. Covered: OpenCode Go (5 hours / weekly / monthly), ChatGPT / Codex (5 hours / weekly, plan, credits) and Claude (5 hours / weekly / per model), next to what went through this gateway in the same window. These are the vendors' own account-wide percentages from endpoints that are not public APIs, so they can change; the page says why when one stops answering.
+- **Prices:** USD per 1M tokens. OpenCode's catalog states its own prices, including peak-hour surcharges (applied by the UTC time of each request); use **Refresh OpenCode prices** after adding the endpoint or when prices change. For anything else, enter a price per model (a pay-as-you-go API, or an API-equivalent price for a subscription); leave local models unpriced. A manual price wins and **Reset** returns to the catalog price.
+
+How far back it goes depends on how long the request log is kept (Settings -> Data retention). Cached prompt tokens are recorded from now on; older requests are priced without a cache discount, an upper estimate.
+
 ## Configuration
 
-`SG_ADMIN_PASSWORD` (+ `SG_ADMIN_USER`, default `admin`) is the UI/API login. **The admin API fails closed:** if it is unset, a random password is generated once, kept in the data volume (`admin_password`) and printed in the container log (`docker compose logs`) **on the first start only** (afterwards read it from `/data/admin_password`); you can then choose your own in **Settings → Admin password** (stored as a salted hash; the environment variable, when set, always wins); `SG_ALLOW_OPEN_ADMIN=1` disables login entirely (trusted dev machines only). The container runs as a non-root user · `SG_PORT` · `SG_BIND` (address the port is published on, default `0.0.0.0` = all interfaces; set `127.0.0.1` when a TLS reverse proxy on the same host fronts SmartGateway - the container serves plain HTTP unless `SG_SSL_CERT`/`SG_SSL_KEY` are set) · `SG_SECRET_KEY` (otherwise a key file is generated
-in the data volume, back it up together with the database) · `SG_CORS_ORIGINS` (browser clients of /gw and /v1) · `SG_ALLOWED_ORIGINS` (extra origins allowed to make state-changing admin API calls; by default only the page's own host) · `SG_SSL_CERT`/`SG_SSL_KEY` (HTTPS, or use
+`SG_ADMIN_PASSWORD` (+ `SG_ADMIN_USER`, default `admin`) is the UI/API login. **The admin API fails closed.** On a brand-new install (empty data volume, no password set) the web UI opens a **setup wizard** where you create the admin account; it asks for a one-time setup code printed in the container log (`docker compose logs`), so only someone with access to the server can finish it, and the API stays closed until then (`SG_SETUP_WIZARD=0` skips the wizard). An existing install - one with data, or any password already set - never sees the wizard. Without the wizard (or if it is switched off), if the password is unset, a random password is generated once, kept in the data volume (`admin_password`) and printed in the container log (`docker compose logs`) **on the first start only** (afterwards read it from `/data/admin_password`); you can then choose your own in **Settings → Admin password** (stored as a salted hash; the environment variable, when set, always wins); `SG_ALLOW_OPEN_ADMIN=1` disables login entirely (trusted dev machines only). The container runs as a non-root user · `SG_PORT` · `SG_BIND` (address the port is published on, default `0.0.0.0` = all interfaces; set `127.0.0.1` when a TLS reverse proxy on the same host fronts SmartGateway - the container serves plain HTTP unless `SG_SSL_CERT`/`SG_SSL_KEY` are set) · `SG_SECRET_KEY` (otherwise a key file is generated
+in the data volume, back it up together with the database) · `SG_CORS_ORIGINS` (browser clients) · `SG_SSL_CERT`/`SG_SSL_KEY` (HTTPS, or use
 a reverse proxy) · `SG_DEFAULT_SLOTS` · `SG_HEALTH_INTERVAL` · `SG_FALLBACK_GRACE` · `SG_REDIS_URL`. Data lives in the `sg-data` volume
 (SQLite); schema upgrades are applied automatically on start. Back up the data volume as a whole: without `secret.key` stored upstream keys
 must be re-entered. Gateway API keys cannot be recovered after creation.
@@ -80,6 +99,17 @@ Combine upstream models behind one URL with your own public model names. Strateg
 fastest, random, **tiered** (by prompt complexity), plus fallback members and sticky sessions (`X-SG-Session` / `user`). Per model you can
 set a system prompt, default parameters, a max-tokens ceiling, caching and compression. Requests can steer routing with `X-SG-Require`.
 
+**The gateway editor** is split into two tabs: *Gateway* (name, slug, defaults, and the gateway's API keys underneath) and *Models*. Each public model has its own sections, and
+which ones appear depends on what the model contains: *Upstream models* always; *Routing & fallbacks* from two upstream models on; *Audio* when
+an upstream model does text-to-speech or speech-to-text; *Cache & compression* for chat and embedding models; *Safety* and *Overrides* for chat
+models. A tab that appears because of a change you just made is marked "new", and tabs show a badge when something is set in them.
+
+**Routing order & fallbacks:** in the *Routing & fallbacks* tab each public model shows its upstream models as a chain of steps: step 1 is tried
+first, and when none of its models can answer (down, busy, error, rate limit) the next step takes over. Models in the same step share the
+load. Drag models between steps (or use the arrows), switch "wait for the steps above" per fallback step, and use the power button to
+preview which model would serve if another failed (a preview only, nothing is saved). With "Priority with failover" the order is strict;
+other strategies only use it to break ties (the editor offers to switch).
+
 **Extra names (aliases):** a public model can have optional additional names. Clients may request any of them; the request is logged,
 cached and answered under the name used, and `/models` lists each one. Keys' allowed-model lists accept the canonical name or an alias.
 
@@ -88,6 +118,18 @@ or of one model with `?model=` (on the unified endpoint that is a gateway name o
 `{"voices": [...]}`), merging several TTS models. Voices are discovered when an endpoint is added or rescanned and shown as a checklist in the gateway editor, so you can offer a subset
 without typing names (**Refresh from upstream** re-reads them); models exposed directly on the unified endpoint (Gateways -> Unified) get the same checklist. Nothing selected means every voice the upstream reports. For servers that
 have no such endpoint, type the names in the same field.
+
+**Audio defaults:** the *Audio* tab of a public model also sets defaults that are used only when a request leaves the setting out (a client's own
+value always wins): for text-to-speech a default voice, format (`mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`) and speed (0.25 to 4); for speech-to-text a
+default language (transcriptions only, translations are always into English), format and temperature. They apply to `audio/speech`,
+`audio/transcriptions` and `audio/translations`, never to chat requests.
+
+**Playground audio:** pick an audio gateway (or a name on the unified endpoint) in the Playground and it offers what the model can do. A model with
+a text-to-speech upstream gets a *Text to speech* mode (text, voice from the model's voice list, format and speed; the audio plays in the page and can
+be downloaded), a model with a transcription upstream gets *Speech to text* (upload an audio file or record with the microphone, choose language,
+format and transcribe or translate; recording needs https or localhost). Settings left on default use the model's audio defaults, then the
+upstream's. A model that also chats keeps its *Chat* mode; the other controls (system prompt, temperature, cache) are chat-only and hide in the
+audio modes.
 
 ### Council gateways
 A **council** gateway turns several models into one better answer, behind an ordinary `chat/completions` URL (Gateways → **Council** tab).
@@ -113,8 +155,9 @@ Typical use: a "research council" of three different providers with a strong cha
 It costs several model calls per question, so use it where quality matters more than latency.
 
 ### MCP Servers and MCP Gateways
-**MCP Servers** connects remote MCP servers (Streamable HTTP, with legacy SSE fallback). Headers such as `Authorization` are stored
-encrypted, and discovery, health checks and re-scans run automatically. **MCP Gateways** combines endpoints into one server at
+**MCP Servers** connects remote MCP servers (Streamable HTTP, with legacy SSE fallback). An optional **Authorization** field takes just the API
+token (sent as `Authorization: Bearer <token>`; paste a full value such as `Basic …` to use another scheme), and other request headers can be
+added; all of them are stored encrypted, never shown again, and used by **Test connection** while editing. Discovery, health checks and re-scans run automatically. **MCP Gateways** combines endpoints into one server at
 `/mcp/<slug>`:
 
 - tools and prompts are namespaced `prefix__name`, resources `mcp://prefix/<original uri>`, so servers never collide;
@@ -132,8 +175,14 @@ Gateways -> **Unified** tab exposes several gateways through one OpenAI-compatib
 You choose which gateways are exposed; the `model` a client sends is the **gateway name** (case-insensitive, the slug also works).
 A gateway with several public models is reachable as `Name` (its configurable default model) and as `Name/model`.
 
-Authentication: by default each gateway checks its own API key (open gateways need none). Create **unified API keys** in the same
-card to protect the whole endpoint: with at least one key, every call needs a key (anonymous access is closed, even to open gateways).
+The settings are split into tabs, like the gateway editor: *Endpoint* (enable, URL and the unified API keys), *Gateways* (tick the gateways to
+serve, with a default model and extra names for each) and *Models* (single upstream models exposed directly, one panel each). All voice
+settings are on one *Audio* tab, as in the gateway editor: it appears once a directly exposed model does speech and has a *Text-to-speech* section
+(voices, default voice, format and speed for each TTS model) and a *Speech-to-text* section (default language, format and temperature for each
+transcription model). One **Save** button at the top covers all tabs.
+
+Authentication: by default each gateway checks its own API key (open gateways need none). Create **unified API keys** on the *Endpoint* tab
+to protect the whole endpoint: with at least one key, every call needs a key (anonymous access is closed, even to open gateways).
 A unified key works for all exposed gateways without their own keys (it carries no per-key limits or quotas); a gateway's own key still
 works for that gateway only. Keys are stored hashed and the plaintext is shown once, at creation.
 `GET /unified/v1/models` lists only what the caller may use, so protected gateways are not revealed to anonymous callers.
@@ -243,12 +292,9 @@ The admin UI and API always require a password (see Configuration), but the gate
 - Consider not publishing the admin UI at all: route only `/gw/`, `/v1/`, `/unified/` and `/mcp/` through the public proxy and keep `/` and `/api/` on a private network or VPN.
 - Request bodies are capped (`SG_MAX_BODY_MB`, default 100 for gateway calls; `SG_MAX_ADMIN_BODY_MB`, default 20), and all request bodies in flight together are bounded too (`SG_MAX_INFLIGHT_BODY_MB`, default 512; beyond it requests get 503 + Retry-After). Public error messages are generic; full upstream errors and routing headers are only shown to the signed-in admin (`SG_VERBOSE_ERRORS=1` shows them to everyone, for private networks).
 - Upstream response headers such as cookies, CORS and server banners are never passed on to clients. The container runs as a non-root user and its dependencies are pinned to patched releases (`backend/requirements.txt`); rebuild regularly.
-- Content filter regexes are written by the admin and run on client text; each match has a time limit (`SG_FILTER_REGEX_TIMEOUT_MS`) and a request whose filter times out is blocked, but avoid patterns with nested quantifiers anyway.
-- Publishing the port: `SG_BIND=127.0.0.1` keeps it on this host when the TLS proxy runs beside the container.
+- Content filter regexes are written by the admin and run on client text: avoid patterns with nested quantifiers.
 
 ## Security notes for contributors
-
-How to report a vulnerability, what is in scope and what to expect: see [SECURITY.md](SECURITY.md).
 
 - Never commit `.env`, `secret.key`, `*.db`, backups or exported images (all are in `.gitignore`). Use `.env.example` as the template.
 - Set `SG_ADMIN_PASSWORD` in any deployment reachable from a network; without it the UI and management API are open.
