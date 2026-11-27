@@ -209,7 +209,7 @@ def _fail(ip: str) -> None:
 
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; "
-       "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+       "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
 ALLOWED_ORIGINS = [o.strip().rstrip("/").lower() for o in os.environ.get("SG_ALLOWED_ORIGINS", "").split(",") if o.strip()]   # extra origins allowed to call the admin API (rarely needed)
 
 
