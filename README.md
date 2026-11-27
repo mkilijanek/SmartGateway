@@ -82,7 +82,7 @@ How far back it goes depends on how long the request log is kept (Settings -> Da
 ## Configuration
 
 `SG_ADMIN_PASSWORD` (+ `SG_ADMIN_USER`, default `admin`) is the UI/API login. **The admin API fails closed.** On a brand-new install (empty data volume, no password set) the web UI opens a **setup wizard** where you create the admin account; it asks for a one-time setup code printed in the container log (`docker compose logs`), so only someone with access to the server can finish it, and the API stays closed until then (`SG_SETUP_WIZARD=0` skips the wizard). An existing install - one with data, or any password already set - never sees the wizard. Without the wizard (or if it is switched off), if the password is unset, a random password is generated once, kept in the data volume (`admin_password`) and printed in the container log (`docker compose logs`) **on the first start only** (afterwards read it from `/data/admin_password`); you can then choose your own in **Settings → Admin password** (stored as a salted hash; the environment variable, when set, always wins); `SG_ALLOW_OPEN_ADMIN=1` disables login entirely (trusted dev machines only). The container runs as a non-root user · `SG_PORT` · `SG_BIND` (address the port is published on, default `0.0.0.0` = all interfaces; set `127.0.0.1` when a TLS reverse proxy on the same host fronts SmartGateway - the container serves plain HTTP unless `SG_SSL_CERT`/`SG_SSL_KEY` are set) · `SG_SECRET_KEY` (otherwise a key file is generated
-in the data volume, back it up together with the database) · `SG_CORS_ORIGINS` (browser clients) · `SG_SSL_CERT`/`SG_SSL_KEY` (HTTPS, or use
+in the data volume, back it up together with the database) · `SG_CORS_ORIGINS` (browser clients of /gw and /v1) · `SG_ALLOWED_ORIGINS` (extra origins allowed to make state-changing admin API calls; by default only the page's own host) · `SG_SSL_CERT`/`SG_SSL_KEY` (HTTPS, or use
 a reverse proxy) · `SG_DEFAULT_SLOTS` · `SG_HEALTH_INTERVAL` · `SG_FALLBACK_GRACE` · `SG_REDIS_URL`. Data lives in the `sg-data` volume
 (SQLite); schema upgrades are applied automatically on start. Back up the data volume as a whole: without `secret.key` stored upstream keys
 must be re-entered. Gateway API keys cannot be recovered after creation.
@@ -292,10 +292,13 @@ The admin UI and API always require a password (see Configuration), but the gate
 - Consider not publishing the admin UI at all: route only `/gw/`, `/v1/`, `/unified/` and `/mcp/` through the public proxy and keep `/` and `/api/` on a private network or VPN.
 - Request bodies are capped (`SG_MAX_BODY_MB`, default 100 for gateway calls; `SG_MAX_ADMIN_BODY_MB`, default 20), and all request bodies in flight together are bounded too (`SG_MAX_INFLIGHT_BODY_MB`, default 512; beyond it requests get 503 + Retry-After). Public error messages are generic; full upstream errors and routing headers are only shown to the signed-in admin (`SG_VERBOSE_ERRORS=1` shows them to everyone, for private networks).
 - Upstream response headers such as cookies, CORS and server banners are never passed on to clients. The container runs as a non-root user and its dependencies are pinned to patched releases (`backend/requirements.txt`); rebuild regularly.
-- Content filter regexes are written by the admin and run on client text: avoid patterns with nested quantifiers.
+- Content filter regexes are written by the admin and run on client text; each match has a time limit (`SG_FILTER_REGEX_TIMEOUT_MS`) and a request whose filter times out is blocked, but avoid patterns with nested quantifiers anyway.
+- Publishing the port: `SG_BIND=127.0.0.1` keeps it on this host when the TLS proxy runs beside the container.
 
 ## Security notes for contributors
 
 - Never commit `.env`, `secret.key`, `*.db`, backups or exported images (all are in `.gitignore`). Use `.env.example` as the template.
 - Set `SG_ADMIN_PASSWORD` in any deployment reachable from a network; without it the UI and management API are open.
 - Back up `secret.key` (or keep `SG_SECRET_KEY` in your secret manager) together with the database.
+
+How to report a vulnerability, what is in scope and what to expect: see [SECURITY.md](SECURITY.md).

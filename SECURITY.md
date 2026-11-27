@@ -36,19 +36,27 @@ Do not include real secrets, other people's data, or anything from a system you 
 
 ### What to expect
 
-SmartGateway is maintained by volunteers. We will acknowledge your report, tell you whether it is accepted, needs more information
-or is declined (with reasons), and keep you informed about the fix. If you disagree with a decision, say so.
+SmartGateway is maintained by volunteers, so these are targets, not guarantees (the maintainers may adjust them):
+
+| Step | Target |
+| ---- | ------ |
+| Acknowledgement of your report | 7 days |
+| First assessment (accepted, needs more information, or declined, with reasons) | 14 days |
+| Fix or mitigation for a confirmed high or critical issue | 30 days |
+| Fix for a confirmed medium or low issue | next regular release |
+
+We will tell you if a date slips. If a report is declined we will explain why; you are free to disagree.
 
 ### Disclosure
 
 We prefer coordinated disclosure: fix first, publish afterwards. Once a fix is merged we publish a GitHub security advisory (and
-request a CVE where one is warranted) that credits you unless you ask us not to. Please tell us before you publish your own
-write-up so that we can agree on a date.
+request a CVE where one is warranted) that credits you unless you ask us not to. If a report is not fixed within **90 days** you
+may publish your findings; please tell us beforehand.
 
 ### Good-faith research
 
 We will not take legal action against research that follows this policy: test only against your own installation, do not access
-or keep data that is not yours, do not degrade other people's services, and give us time to fix before publishing.
+or keep data that is not yours, do not degrade other people's services, and give us a reasonable time to fix before publishing.
 
 ## Scope
 
@@ -82,7 +90,8 @@ This is the intended security model, so you can tell a bug from a design choice:
 - the management API **fails closed**: without `SG_ADMIN_PASSWORD` a random password is generated; open access needs an explicit opt-in;
 - gateway and MCP API keys are stored only as hashes and shown once; upstream API keys and MCP headers are encrypted at rest
   (back up `secret.key` / `SG_SECRET_KEY` with the database);
-- failed logins are rate-limited, request bodies are size-limited, and public error messages on the gateway endpoints are generic;
+- state-changing admin requests are checked for their origin, failed logins are rate-limited, request bodies and MCP responses are
+  size-limited, and public error messages are generic;
 - the container runs as a non-root user and the Python dependencies are pinned (`backend/requirements.txt`).
 
 A deployment checklist lives in the README (*Exposing it to the internet*). Each deployment is still the operator's responsibility:

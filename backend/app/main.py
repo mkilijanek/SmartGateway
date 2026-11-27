@@ -10,6 +10,7 @@ import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -209,6 +210,25 @@ def _fail(ip: str) -> None:
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; "
        "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+ALLOWED_ORIGINS = [o.strip().rstrip("/").lower() for o in os.environ.get("SG_ALLOWED_ORIGINS", "").split(",") if o.strip()]   # extra origins allowed to call the admin API (rarely needed)
+
+
+def origin_ok(headers) -> bool:
+    """Browsers always send Origin on cross-origin and on state-changing requests. If it is present it must be this site (same host:port as the
+    Host / X-Forwarded-Host the client used, whatever the scheme, since TLS is often terminated by a proxy) or an explicitly allowed origin.
+    No Origin = not a browser form/fetch (curl, scripts), which cookie-based CSRF cannot use."""
+    origin = (headers.get("origin") or "").strip()
+    if not origin:
+        return True
+    if origin.lower().rstrip("/") in ALLOWED_ORIGINS:
+        return True
+    host = (headers.get("x-forwarded-host") or headers.get("host") or "").split(",")[0].strip().lower()
+    try:
+        return bool(host) and urlsplit(origin).netloc.lower() == host
+    except ValueError:
+        return False
+
+
 CORS_ORIGINS = [o.strip() for o in os.environ.get("SG_CORS_ORIGINS", "").split(",") if o.strip()]
 
 
@@ -228,6 +248,8 @@ async def guard(request: Request, call_next):
                     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS", "Access-Control-Expose-Headers": "X-SG-Upstream,X-SG-Endpoint,X-SG-Request-Id,X-SG-Cache,Mcp-Session-Id"}
         if request.method == "OPTIONS":
             return Response(status_code=204, headers=cors)
+    if p.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and not origin_ok(request.headers):
+        return JSONResponse({"detail": "Cross-origin request refused"}, status_code=403)   # CSRF: SameSite=Lax alone doesn't cover same-site origins
     if config.SETUP_PENDING and p.startswith("/api/") and p not in ("/api/session", "/api/setup", "/api/ws"):
         return JSONResponse({"detail": "Setup required: open the web UI and create the admin account"}, status_code=403)
     # admin protection for the management API (UI shell stays public so the login page can load)
