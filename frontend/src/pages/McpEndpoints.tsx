@@ -5,18 +5,31 @@ import { Empty, Modal, PageHeader, StatusDot } from "../components/ui";
 
 const KIND_LABEL: Record<string, string> = { tool: "Tools", resource: "Resources", template: "Resource templates", prompt: "Prompts" };
 type Hdr = { k: string; v: string; saved?: boolean };
+const isAuth = (k: string) => k.trim().toLowerCase() === "authorization";
+/** What goes into the Authorization header for what the admin typed: a bare token becomes "Bearer <token>"; a full value ("Basic …", "Token …") is sent as it is. */
+export const authValue = (v: string) => (/\s/.test(v.trim()) ? v.trim() : "Bearer " + v.trim());
 
 function EndpointForm({ init, onClose, onDone }: { init?: any; onClose: () => void; onDone: () => void }) {
   const [f, setF] = useState({ name: init?.name || "", url: init?.url || "", transport: init?.transport || "auto" });
-  const [hdrs, setHdrs] = useState<Hdr[]>((init?.header_names || []).map((k: string) => ({ k, v: "", saved: true })));
+  const [hdrs, setHdrs] = useState<Hdr[]>((init?.header_names || []).filter((k: string) => !isAuth(k)).map((k: string) => ({ k, v: "", saved: true })));
+  const [token, setToken] = useState("");                                                             // the optional Authorization field
+  const [tokenSaved, setTokenSaved] = useState<boolean>((init?.header_names || []).some(isAuth));   // a token is already stored (its value is never sent back)
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [err, setErr] = useState("");
   const [probe, setProbe] = useState<any>(null);
-  const headers = () => Object.fromEntries(hdrs.filter((h) => h.k.trim()).map((h) => [h.k.trim(), h.v]));
+  const headers = () => {
+    const own = token.trim();
+    // the Authorization field wins over a header row of the same name (header names are not case sensitive, so both would be sent)
+    const rows = hdrs.filter((h) => h.k.trim() && !(own && isAuth(h.k)));
+    const out: Record<string, string> = Object.fromEntries(rows.map((h) => [h.k.trim(), h.v]));
+    if (own) out["Authorization"] = authValue(own);
+    else if (tokenSaved) out["Authorization"] = "";   // empty = keep the saved value
+    return out;
+  };
   const test = async () => {
     setTesting(true); setProbe(null); setErr("");
-    try { setProbe(await api("/api/mcp-endpoints/test", { method: "POST", json: { ...f, headers: headers() } })); } catch (e: any) { setErr(e.message); }
+    try { setProbe(await api("/api/mcp-endpoints/test", { method: "POST", json: { ...f, headers: headers(), endpoint_id: init?.id ?? null } })); } catch (e: any) { setErr(e.message); }
     setTesting(false);
   };
   const save = async () => {
@@ -38,7 +51,16 @@ function EndpointForm({ init, onClose, onDone }: { init?: any; onClose: () => vo
           <select className="input" value={f.transport} onChange={(e) => setF({ ...f, transport: e.target.value })}>
             <option value="auto">Auto-detect (Streamable HTTP, then legacy SSE)</option><option value="streamable_http">Streamable HTTP</option><option value="sse">Legacy SSE</option></select></div>
         <div>
-          <label className="lbl">Request headers <span className="normal-case text-[#787884]">(e.g. Authorization: Bearer …; stored encrypted)</span></label>
+          <label className="lbl">Authorization <span className="normal-case text-[#787884]">(optional · API token, stored encrypted)</span></label>
+          <div className="flex gap-2">
+            <input className="input mono" type="password" autoComplete="off" spellCheck={false} data-testid="auth-token" value={token} onChange={(e) => setToken(e.target.value)}
+              placeholder={tokenSaved ? "saved (leave empty to keep)" : "paste the API token"} />
+            {tokenSaved && !token && <button className="btn danger !px-2" title="Remove the saved token" onClick={() => setTokenSaved(false)} data-testid="auth-remove"><X size={14} /></button>}
+          </div>
+          <div className="mt-1 text-xs text-[#787884]">Sent as <span className="mono">Authorization: Bearer &lt;token&gt;</span>. To use another scheme, paste the whole value, e.g. <span className="mono">Basic dXNlcjpwYXNz</span>.</div>
+        </div>
+        <div>
+          <label className="lbl">Other request headers <span className="normal-case text-[#787884]">(e.g. X-Api-Key; stored encrypted)</span></label>
           <div className="space-y-2">{hdrs.map((h, i) => (
             <div key={i} className="flex gap-2">
               <input className="input mono !w-44" placeholder="Header" value={h.k} readOnly={h.saved} onChange={(e) => setH(i, { k: e.target.value })} />

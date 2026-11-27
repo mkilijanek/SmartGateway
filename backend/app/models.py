@@ -30,6 +30,12 @@ class Model(SQLModel, table=True):
     context_length: Optional[int] = None
     enabled: bool = True
     voices: Optional[list] = Field(default=None, sa_column=Column(JSON))  # TTS: voices the upstream reported via /audio/voices (discovered)
+    # prices in USD per 1M tokens: the catalog's own `cost` block (OpenCode) and/or a manual override (the admin's wins)
+    catalog_cost: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    price_in: Optional[float] = None
+    price_out: Optional[float] = None
+    price_cache_read: Optional[float] = None
+    price_manual: bool = False
 
 
 class Gateway(SQLModel, table=True):
@@ -59,7 +65,8 @@ class GatewayModel(SQLModel, table=True):
     sticky: bool = False
     system_prompt: Optional[str] = None
     max_tokens_cap: Optional[int] = None
-    default_params: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    default_params: dict = Field(default_factory=dict, sa_column=Column(JSON))   # chat routes only
+    audio_defaults: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # {"speech": {voice, response_format, speed}, "transcription": {language, response_format, temperature}}
     cache_enabled: bool = False
     cache_ttl: Optional[int] = None  # seconds; None = global default
     cache_any_temperature: bool = False  # False: only temperature == 0 (or X-SG-Cache: 1)
@@ -120,6 +127,7 @@ class RequestLog(SQLModel, table=True):
     total_ms: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0     # part of prompt_tokens the upstream served from its prompt cache (priced lower)
     attempts: int = 1
     error: Optional[str] = None
     finish_reason: Optional[str] = None   # what the model reported: stop | length | tool_calls | content_filter | None (no finish chunk)
@@ -313,3 +321,18 @@ class AdminSession(SQLModel, table=True):
     sid: str = Field(primary_key=True)
     exp: float = Field(index=True)
     created_at: float = Field(default_factory=time.time)
+
+
+class OAuthAccount(SQLModel, table=True):
+    """A subscription account (ChatGPT/Codex or Claude) behind one Endpoint. The tokens are encrypted and never leave the server."""
+    endpoint_id: int = Field(foreign_key="endpoint.id", primary_key=True)
+    kind: str = "codex"
+    access_token: Optional[str] = Field(default=None, sa_column=Column(EncryptedString))
+    refresh_token: Optional[str] = Field(default=None, sa_column=Column(EncryptedString))
+    expires_at: float = 0                       # access token expiry (unix seconds)
+    account_id: Optional[str] = None            # ChatGPT account id (sent as the ChatGPT-Account-Id header)
+    email: Optional[str] = None
+    plan: Optional[str] = None
+    needs_login: bool = False                   # the refresh token is dead: sign in again
+    last_refresh: Optional[float] = None
+    last_error: Optional[str] = None

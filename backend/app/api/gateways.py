@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ..voices import clean_voices
+from ..voices import abilities, clean_audio_defaults, clean_voices
 from .. import config, guardrails
 from ..db import get_session
 from ..crypto import hash_key
@@ -39,6 +39,7 @@ class GatewayModelIn(BaseModel):
     system_prompt: Optional[str] = None
     max_tokens_cap: Optional[int] = None
     default_params: dict = {}
+    audio_defaults: Optional[dict] = None   # speech / transcription defaults (see voices.clean_audio_defaults)
     cache_enabled: bool = False
     cache_ttl: Optional[int] = None
     cache_any_temperature: bool = False
@@ -83,7 +84,7 @@ def gw_out(gw: Gateway, s: Session) -> dict:
             members.append({**mem.model_dump(), "upstream_id": m.upstream_id, "endpoint_id": m.endpoint_id,
                             "endpoint_name": ep.name if ep else "?", "provider": ep.provider if ep else None, "capabilities": m.capabilities, "voices": m.voices or [],
                             "max_slots": m.max_slots})
-        d["models"].append({**gm.model_dump(), "members": members, "capabilities": sorted(caps)})
+        d["models"].append({**gm.model_dump(), "members": members, "capabilities": sorted(caps), "abilities": abilities([x["capabilities"] for x in members])})
     return d
 
 
@@ -142,9 +143,13 @@ def apply_models(gw: Gateway, body: GatewayIn, s: Session):
         missing = guardrails.library.missing_refs(s, gmi.guardrails)
         if missing:
             raise HTTPException(400, f"Guardrails of '{gmi.public_name}' reference unknown content filters: {', '.join(missing)}")
+        try:
+            audio_defaults = clean_audio_defaults(gmi.audio_defaults, clean_voices(gmi.voices))
+        except ValueError as e:
+            raise HTTPException(400, f"'{gmi.public_name}': {e}")
         gm = GatewayModel(gateway_id=gw.id, public_name=gmi.public_name.strip(), enabled=gmi.enabled, aliases=gmi.aliases or None, voices=clean_voices(gmi.voices) or None, strategy=gmi.strategy or None,
                           sticky=gmi.sticky, system_prompt=gmi.system_prompt or None,
-                          max_tokens_cap=gmi.max_tokens_cap or None, default_params=gmi.default_params or {},
+                          max_tokens_cap=gmi.max_tokens_cap or None, default_params=gmi.default_params or {}, audio_defaults=audio_defaults,
                           cache_enabled=gmi.cache_enabled, cache_ttl=gmi.cache_ttl or None,
                           cache_any_temperature=gmi.cache_any_temperature, compress_mode=gmi.compress_mode or None,
                           cache_streaming=gmi.cache_streaming, cache_per_key=gmi.cache_per_key, cache_replay_speed=gmi.cache_replay_speed,

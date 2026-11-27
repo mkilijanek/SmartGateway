@@ -9,10 +9,10 @@ export function useTab(keys: string[], fallback: string = keys[0]): [string, (k:
   return [keys.includes(v) ? v : fallback, (k: string) => setSp((p) => { const n = new URLSearchParams(p); k === fallback ? n.delete("tab") : n.set("tab", k); return n; }, { replace: true })];
 }
 
-export function Tabs({ items, value, onChange }: { items: [string, string][]; value: string; onChange: (k: string) => void }) {
+export function Tabs({ items, value, onChange }: { items: [string, string, React.ReactNode?][]; value: string; onChange: (k: string) => void }) {
   return (
-    <div className="mb-5 flex flex-wrap gap-2">
-      {items.map(([k, label]) => <button key={k} onClick={() => onChange(k)} className={cls(value === k)}>{label}</button>)}
+    <div className="mb-5 flex flex-wrap gap-2" role="tablist">
+      {items.map(([k, label, badge]) => <button key={k} role="tab" aria-selected={value === k} data-testid={`tab-${k}`} onClick={() => onChange(k)} className={cls(value === k)}>{label}{badge}</button>)}
     </div>
   );
 }

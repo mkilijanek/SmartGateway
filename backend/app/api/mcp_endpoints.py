@@ -56,10 +56,19 @@ def list_endpoints(s: Session = Depends(get_session)):
     return [ep_out(e, s) for e in s.exec(select(McpEndpoint).order_by(McpEndpoint.id)).all()]
 
 
+class TestIn(EndpointIn):
+    endpoint_id: Optional[int] = None   # editing: an empty header value means "the value saved for that header of this endpoint"
+
+
 @router.post("/mcp-endpoints/test")
-async def test_endpoint(body: EndpointIn):
+async def test_endpoint(body: TestIn, s: Session = Depends(get_session)):
     _check(body.name or "x", body.url, body.transport)
-    return await registry.probe(body.url, body.headers, body.transport)
+    headers = dict(body.headers)
+    if body.endpoint_id:
+        ep = s.get(McpEndpoint, body.endpoint_id)
+        saved = registry.headers_of(ep) if ep else {}
+        headers = {k: (saved[k] if v == "" and k in saved else v) for k, v in headers.items()}
+    return await registry.probe(body.url, {k: v for k, v in headers.items() if v != ""}, body.transport)
 
 
 @router.post("/mcp-endpoints")

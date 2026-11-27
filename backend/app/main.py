@@ -4,7 +4,9 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
+import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -20,7 +22,7 @@ from pydantic import BaseModel
 
 from . import audit, config, crypto, proxy, retention, settings_store
 from .bodylimit import BodyLimit
-from .api import compression as compression_api, mcp_endpoints as mcp_endpoints_api, mcp_gateways as mcp_gateways_api, content_filters as content_filters_api, endpoints, gateways, insights as insights_api, maintenance as maintenance_api, settings as settings_api, stats, stress as stress_api, unified as unified_api
+from .api import accounts as accounts_api, compression as compression_api, cost as cost_api, mcp_endpoints as mcp_endpoints_api, mcp_gateways as mcp_gateways_api, content_filters as content_filters_api, endpoints, gateways, insights as insights_api, maintenance as maintenance_api, settings as settings_api, stats, stress as stress_api, unified as unified_api
 from .db import engine, init_db, session
 from .mcp import registry as mcp_registry, server as mcp_server
 from .models import AdminSession, Endpoint, McpEndpoint
@@ -31,7 +33,10 @@ from .router import health
 async def lifespan(app: FastAPI):
     init_db()
     log = logging.getLogger("smartgateway")
-    if config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW:
+    if config.SETUP_PENDING:
+        print("SmartGateway: first start - open the web UI and create the admin account. "
+              f"Setup code: {config.setup_code()}  (also stored in {config.DATA_DIR}/setup_code; it stops working once the account exists)", flush=True)
+    elif config.GENERATED_ADMIN_PASSWORD and config.GENERATED_ADMIN_PASSWORD_IS_NEW:
         print(f"SmartGateway: SG_ADMIN_PASSWORD is not set, so a random admin password was generated (user '{os.environ.get('SG_ADMIN_USER', 'admin')}'): "
               f"{config.ADMIN_PASSWORD}  (shown only this once; also stored in {config.DATA_DIR}/admin_password; set SG_ADMIN_PASSWORD or change it in Settings)", flush=True)
     elif config.GENERATED_ADMIN_PASSWORD:
@@ -51,6 +56,9 @@ async def lifespan(app: FastAPI):
     await cache.reconfigure(settings_store.get_all())
     tasks = [asyncio.create_task(health.loop()), asyncio.create_task(health.slot_sync_loop()),
              asyncio.create_task(scheduler.run_ticker()), asyncio.create_task(retention.loop()), asyncio.create_task(mcp_registry.loop())]
+    from .accounts import limits as plan_limits
+    if plan_limits.POLL:   # keep the plan-limit numbers of subscription accounts fresh for the Dashboard and the Endpoints page
+        tasks.append(asyncio.create_task(plan_limits.loop()))
     yield
     for t in tasks:
         t.cancel()
@@ -101,14 +109,6 @@ def valid_session(token: str | None) -> bool:
         return False
 
 
-def admin_user() -> str:
-    return os.environ.get("SG_ADMIN_USER", "admin")
-
-
-def _user_ok(candidate: str) -> bool:
-    return secrets.compare_digest(candidate.encode(), admin_user().encode())
-
-
 def revoke_session(token: str | None = None, everyone: bool = False) -> bool:
     """True when the session(s) are gone (or never existed); False if the registry could not be updated."""
     try:
@@ -129,7 +129,17 @@ def revoke_session(token: str | None = None, everyone: bool = False) -> bool:
         return False
 
 
+def admin_user() -> str:
+    return config.stored_username() or os.environ.get("SG_ADMIN_USER", "admin")   # the wizard's choice wins over the environment default
+
+
+def _user_ok(candidate: str) -> bool:
+    return secrets.compare_digest(candidate.encode(), admin_user().encode())
+
+
 def request_authed(headers, cookies) -> bool:
+    if config.SETUP_PENDING:
+        return False   # nobody is an admin until the setup wizard has created the account
     if not config.ADMIN_PASSWORD:
         return True
     if valid_session(cookies.get(COOKIE)):
@@ -199,7 +209,7 @@ def _fail(ip: str) -> None:
 
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; "
-       "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+       "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
 ALLOWED_ORIGINS = [o.strip().rstrip("/").lower() for o in os.environ.get("SG_ALLOWED_ORIGINS", "").split(",") if o.strip()]   # extra origins allowed to call the admin API (rarely needed)
 
 
@@ -240,6 +250,8 @@ async def guard(request: Request, call_next):
             return Response(status_code=204, headers=cors)
     if p.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and not origin_ok(request.headers):
         return JSONResponse({"detail": "Cross-origin request refused"}, status_code=403)   # CSRF: SameSite=Lax alone doesn't cover same-site origins
+    if config.SETUP_PENDING and p.startswith("/api/") and p not in ("/api/session", "/api/setup", "/api/ws"):
+        return JSONResponse({"detail": "Setup required: open the web UI and create the admin account"}, status_code=403)
     # admin protection for the management API (UI shell stays public so the login page can load)
     if config.ADMIN_PASSWORD and p.startswith("/api/") and p not in ("/api/login", "/api/session", "/api/ws"):
         ip = request.client.host if request.client else "?"
@@ -283,7 +295,48 @@ class LoginIn(BaseModel):
 @app.get("/api/session")
 def session_info(request: Request):
     authed = request_authed(request.headers, request.cookies)
-    return {"auth_required": bool(config.ADMIN_PASSWORD), "authenticated": authed, **({"password_source": config.PASSWORD_SOURCE} if authed else {})}
+    return {"auth_required": bool(config.ADMIN_PASSWORD) or config.SETUP_PENDING, "authenticated": authed, "setup_required": config.SETUP_PENDING,
+            **({"password_source": config.PASSWORD_SOURCE} if authed else {})}
+
+
+class SetupIn(BaseModel):
+    code: str
+    username: str
+    password: str
+
+
+_setup_lock = threading.Lock()
+_USER_RE = re.compile(r"^[A-Za-z0-9._@-]{3,40}$")
+
+
+@app.post("/api/setup")
+def setup(body: SetupIn, request: Request):
+    """First-run wizard: create the admin account. Only possible while the install has no admin, and only with the one-time code from the log."""
+    ip = request.client.host if request.client else "?"
+    if not config.SETUP_PENDING:
+        raise HTTPException(409, "Setup is already complete")
+    if _locked(ip):
+        return JSONResponse({"detail": "Too many failed attempts, try again in a few minutes"}, status_code=429)
+    expected = config.setup_code()
+    if not expected or not secrets.compare_digest(body.code.strip().upper().encode(), expected.encode()):
+        _fail(ip)
+        audit.record("setup", ip, "setup failed", "session", status=403, method="POST", path="/api/setup")
+        return JSONResponse({"detail": "Wrong setup code (see the container log: docker logs <container>)"}, status_code=403)
+    user = body.username.strip()
+    if not _USER_RE.match(user):
+        raise HTTPException(400, "The user name must be 3-40 characters: letters, digits and . _ @ -")
+    if len(body.password) < config.MIN_PASSWORD:
+        raise HTTPException(400, f"The password must be at least {config.MIN_PASSWORD} characters")
+    with _setup_lock:
+        if not config.SETUP_PENDING:   # somebody finished it a moment ago
+            raise HTTPException(409, "Setup is already complete")
+        config.complete_setup(user, body.password)
+    _fails.pop(ip, None)
+    audit.record(user, ip, "admin account created", "session", method="POST", path="/api/setup")
+    r = JSONResponse({"ok": True})
+    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    r.set_cookie(COOKIE, make_session(), max_age=SESSION_TTL, httponly=True, samesite="lax", secure=secure)
+    return r
 
 
 class PasswordIn(BaseModel):
@@ -351,6 +404,9 @@ def healthz():
 
 app.add_middleware(BodyLimit)   # added after the guard middleware, so it is the outermost layer
 app.include_router(endpoints.router)
+app.include_router(accounts_api.router)
+app.include_router(cost_api.router)
+app.include_router(cost_api.limits_router)
 app.include_router(gateways.router)
 app.include_router(stats.router)
 app.include_router(maintenance_api.router)

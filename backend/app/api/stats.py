@@ -13,8 +13,8 @@ from ..router import health
 from ..router.scheduler import scheduler
 
 router = APIRouter(prefix="/api")
-RECHECK_EVERY = 30   # seconds between re-validating the session of an open websocket
 MAX_MINUTES = 7 * 1440
+RECHECK_EVERY = 30   # seconds between re-validating the session of an open websocket
 
 
 def live_snapshot(s: Session) -> dict:

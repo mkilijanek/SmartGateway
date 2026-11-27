@@ -14,6 +14,7 @@ services:
     environment:
       SG_ADMIN_PASSWORD: "${SG_ADMIN_PASSWORD:-}"   # set this: it enables the login for the UI + management API
       SG_ADMIN_USER: "${SG_ADMIN_USER:-admin}"
+      SG_CLAUDE_CODE_IDENTITY: "${SG_CLAUDE_CODE_IDENTITY:-}"   # advanced, against Anthropic's terms: present Claude account requests as Claude Code (see README)
       SG_SECRET_KEY: "${SG_SECRET_KEY:-}"            # encrypts upstream API keys; empty = auto-generated in the data volume
       SG_CORS_ORIGINS: "${SG_CORS_ORIGINS:-}"        # e.g. https://app.example.com for browser clients
       SG_REDIS_URL: "${SG_REDIS_URL:-}"              # e.g. redis://redis:6379/0 (can also be set in Settings)

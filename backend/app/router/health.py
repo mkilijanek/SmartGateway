@@ -4,7 +4,7 @@ import time
 
 from sqlmodel import select
 
-from .. import config, discovery
+from .. import accounts, config, discovery
 from ..db import session
 from ..models import Endpoint, Model
 from .scheduler import scheduler
@@ -12,13 +12,27 @@ from .scheduler import scheduler
 status: dict[int, str] = {}  # endpoint_id -> online | offline | unknown
 
 
+async def _account_ok(ep_id: int):
+    from ..accounts import tokens
+    try:
+        await tokens.fresh_access(ep_id)
+        return True, None
+    except accounts.AccountError as e:
+        return False, str(e)[:200]
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}"
+
+
 async def check_endpoint(ep_id: int) -> None:
     with session() as s:
         ep = s.get(Endpoint, ep_id)
         if not ep:
             return
-        url, key = ep.base_url, ep.api_key
-    ok, err = await discovery.ping(url, key)
+        url, key, provider = ep.base_url, ep.api_key, ep.provider
+    if accounts.is_oauth(provider):   # a subscription account: healthy while it can sign requests (no call to the vendor, no quota used)
+        ok, err = await _account_ok(ep_id)
+    else:
+        ok, err = await discovery.ping(url, key)
     with session() as s:
         ep = s.get(Endpoint, ep_id)
         if not ep:
@@ -50,7 +64,7 @@ async def slot_sync_loop() -> None:
         while True:
             try:
                 with session() as s:
-                    eps = [(e.id, e.base_url, e.api_key, e.slot_source) for e in s.exec(select(Endpoint)).all()]
+                    eps = [(e.id, e.base_url, e.api_key, e.slot_source) for e in s.exec(select(Endpoint)).all() if not accounts.is_oauth(e.provider)]
                     models = {}
                     for m in s.exec(select(Model)).all():
                         models.setdefault(m.endpoint_id, []).append(m.id)

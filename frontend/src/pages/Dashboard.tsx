@@ -6,6 +6,7 @@ import { api, PALETTE } from "../api";
 import { useLive } from "../live";
 import { fmt, ms, PageHeader, Stat, StatusDot } from "../components/ui";
 import McpPanel from "../components/McpPanel";
+import { PlanLimitsPanel } from "../components/PlanLimits";
 import { CachePanel, ModelSpeedTable, PerformancePanel, SpeedChart } from "../components/PerfPanels";
 
 const RANGES: [string, number][] = [["15 min", 15], ["1 hour", 60], ["6 hours", 360], ["24 hours", 1440]];
@@ -118,6 +119,8 @@ export default function Dashboard() {
         <div className="mt-5 grid gap-5 xl:grid-cols-[1fr_2fr]"><CachePanel perf={perf} /><PerformancePanel perf={perf} /></div>
         <div className="mt-5 grid gap-5 xl:grid-cols-2"><SpeedChart perf={perf} /><ModelSpeedTable perf={perf} /></div>
       </>)}
+
+      <div className="mt-5 empty:hidden"><PlanLimitsPanel /></div>
 
       {mcp && (mcp.totals.endpoints > 0 || mcp.totals.calls > 0) && <McpPanel d={mcp} />}
 

@@ -7,6 +7,7 @@ import { CapChip, ms, PageHeader } from "../components/ui";
 import FlowGraph from "../components/FlowGraph";
 import CouncilTabs from "../components/CouncilTabs";
 import { loadCouncilFlow } from "../lib/councilFlow";
+import AudioPlayground from "../components/AudioPlayground";
 
 type Msg = { role: "user" | "assistant"; text: string; image?: string; reasoning?: string; meta?: any; error?: string; council?: any };
 
@@ -18,6 +19,7 @@ export default function Playground() {
   const [temp, setTemp] = useState(0.7);
   const [maxTok, setMaxTok] = useState(1024);
   const [stream, setStream] = useState(true);
+  const [pmode, setPmode] = useState("");   // "" = automatic; chat | tts | stt once chosen
   const [useHistory, setUseHistory] = useState(true);  // false: every message is sent as a separate single-turn request
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -42,7 +44,7 @@ export default function Playground() {
           id: "unified", slug: "unified", name: "Unified endpoint", strategy: "least_busy", gwIds: picked.map((x: any) => x.id),
           models: picked.flatMap((x: any) => x.models.filter((m: any) => m.enabled !== false).map((m: any) => ({ ...m, gw_id: x.id, label: x.slug === "__unified__" ? m.public_name : picked.length > 1 ? `${x.name}: ${m.public_name}` : m.public_name, strategy: m.strategy || x.strategy }))),
         };
-        list = [...g, { id: -1, unified: true, flow, name: "Unified endpoint", models: (uni.model_names || []).map((n: string) => ({ id: n, public_name: n, capabilities: [], members: [] })) }];
+        list = [...g, { id: -1, unified: true, flow, name: "Unified endpoint", models: (uni.model_names || []).map((n: string) => ({ id: n, public_name: n, capabilities: uni.model_abilities?.[n]?.capabilities || [], abilities: uni.model_abilities?.[n], members: [] })) }];
       }
       setGws(list);
       if (list[0]) { setGid(list[0].id); setModel((list[0].models.find((m: any) => m.enabled !== false) || list[0].models[0])?.public_name || ""); }
@@ -59,6 +61,12 @@ export default function Playground() {
   useEffect(() => { setCflow(null); if (gw?.kind === "council") loadCouncilFlow(gw).then(setCflow).catch(() => {}); }, [gw]);
   const gm = gw?.models.find((m: any) => m.public_name === model);
   const caps: string[] = gm?.capabilities || [];
+  // what the selected model can do decides the modes: chat, text to speech, speech to text (a model that does none of them stays on chat)
+  const ab = gm?.abilities || { chat: caps.includes("chat") || caps.length === 0, tts: caps.includes("tts"), stt: caps.includes("audio") && !caps.includes("tts") };
+  const modes: [string, string][] = [...(ab.chat ? [["chat", "Chat"] as [string, string]] : []), ...(ab.tts ? [["tts", "Text to speech"] as [string, string]] : []), ...(ab.stt ? [["stt", "Speech to text"] as [string, string]] : [])];
+  if (!modes.length) modes.push(["chat", "Chat"]);
+  // opens on speech when the model does speech (a transcription model is also tagged "chat" by name-based detection); a choice made with the pills is kept
+  const cmode = modes.some((m) => m[0] === pmode) ? pmode : (modes.find((m) => m[0] !== "chat") || modes[0])[0];
 
   const pickImage = (file?: File) => { if (!file) return; const r = new FileReader(); r.onload = () => setImage(r.result as string); r.readAsDataURL(file); };
 
@@ -136,7 +144,7 @@ export default function Playground() {
   };
   return (
     <div className="fadein">
-      <PageHeader title="Playground" sub="Chat with a gateway through the full routing pipeline."
+      <PageHeader title="Playground" sub="Chat, speak and transcribe through a gateway with the full routing pipeline."
         actions={<button className="btn" onClick={() => setMsgs([])}><Trash2 size={15} /> Clear</button>} />
       <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
         <div className="card card-pad space-y-4 self-start">
@@ -146,6 +154,7 @@ export default function Playground() {
           <div><label className="lbl">Model</label>
             <select className="input mono" value={model} onChange={(e) => setModel(e.target.value)}>{gw?.models.filter((m: any) => m.enabled !== false).map((m: any) => <option key={m.id}>{m.public_name}</option>)}</select>
             <div className="mt-2 flex flex-wrap gap-1">{caps.map((c) => <CapChip key={c} cap={c} />)}</div></div>
+          {cmode === "chat" && (<>
           <div><label className="lbl">System prompt</label><textarea className="input" rows={3} value={system} onChange={(e) => setSystem(e.target.value)} /></div>
           <div><label className="lbl">Temperature · {temp}</label><input type="range" min={0} max={2} step={0.1} value={temp} onChange={(e) => setTemp(+e.target.value)} className="w-full" /></div>
           <div><label className="lbl">Max tokens</label><input type="number" min={1} className="input" value={maxTok} onChange={(e) => setMaxTok(+e.target.value || 1)} /></div>
@@ -170,11 +179,16 @@ export default function Playground() {
             {cstats && <div className="mt-3 flex items-center justify-between text-xs text-[#787884]"><span>{cstats.hits} hits · {cstats.misses} misses · {cstats.entries ?? 0} entries</span>
               <button className="text-[#a79cff] hover:underline" onClick={clearCache}>Clear</button></div>}
           </div>
+          </>)}
         </div>
 
         <div className="min-w-0 space-y-5">
+          {modes.length > 1 && (
+            <div className="flex flex-wrap gap-2" role="tablist" aria-label="Playground mode">
+              {modes.map(([k, label]) => <button key={k} role="tab" aria-selected={cmode === k} data-testid={`pmode-${k}`} className={`pill ${cmode === k ? "on" : ""}`} onClick={() => setPmode(k)}>{label}</button>)}
+            </div>)}
           {gw && (gw.unified ? gw.flow.models.length > 0 && <FlowGraph key="unified" gw={gw.flow} /> : gw.kind === "council" ? (cflow && cflow.models.length > 0 && <FlowGraph key={cflow.id} gw={cflow} />) : gw.models.length > 0 && <FlowGraph key={gw.id} gw={gw} />)}
-          {ctest && (() => { const v = verdict(ctest); return (
+          {cmode === "chat" && ctest && (() => { const v = verdict(ctest); return (
             <div className="card card-pad">
               <div className="mb-3 flex items-center justify-between"><h3 className="flex items-center gap-2 text-sm font-semibold"><FlaskConical size={14} /> Cache test</h3><button className="text-xs text-[#8e8e9a] hover:text-white" onClick={() => setCtest(null)}>dismiss</button></div>
               <div className={`mb-3 flex items-start gap-2 rounded-md border p-2.5 text-sm ${v.ok ? "border-[#5fb585]/30 bg-[#5fb585]/10 text-[#7fd1a3]" : "border-[#d1a553]/30 bg-[#d1a553]/10 text-[#e6c27a]"}`}>{v.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <XCircle size={16} className="mt-0.5 shrink-0" />}<span>{v.text}</span></div>
@@ -185,6 +199,7 @@ export default function Playground() {
                     <td className="max-w-[260px] truncate text-xs text-[#8e8e9a]" title={r.text}>{r.error || r.text}</td></tr>))}</tbody></table>
               <p className="mt-2 text-xs text-[#787884]">Same request sent {ctest.stream ? "twice streaming, then once non-streaming" : "twice non-streaming, then once streaming"} · temperature {ctest.temp}{ctest.mode !== "default" ? ` · ${ctest.mode === "force" ? "forced" : "bypass"} header` : ""} · prompt “{ctest.prompt.slice(0, 60)}”</p>
             </div>); })()}
+        {cmode !== "chat" ? <AudioPlayground key={cmode + model} mode={cmode as "tts" | "stt"} base={baseUrl()} model={model} headers={authHeaders()} /> : (
         <div className="card flex h-[520px] flex-col">
           <div className="scroll-thin flex-1 space-y-4 overflow-y-auto p-5">
             {msgs.length === 0 && <div className="pt-16 text-center text-sm text-[#787884]">Send a message to start. Routing details appear under each reply.</div>}
@@ -220,6 +235,7 @@ export default function Playground() {
             </div>
           </div>
         </div>
+        )}
         </div>
       </div>
     </div>
